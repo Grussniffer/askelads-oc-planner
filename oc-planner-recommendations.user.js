@@ -1,0 +1,839 @@
+// ==UserScript==
+// @name         AskeLadds OC Planner Recommendations
+// @namespace    https://askeladds.local/oc-planner
+// @version      0.2.3
+// @description  Shows your OC Planner recommendation on Torn's faction OC page.
+// @author       AskeLadds
+// @match        https://www.torn.com/factions.php*
+// @match        https://torn.com/factions.php*
+// @run-at       document-idle
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// @noframes
+// ==/UserScript==
+
+(() => {
+	"use strict";
+
+	/*
+	 * Set this once before sharing the userscript.
+	 * Players should only need to enter their Torn API key in the panel.
+	 *
+	 * Examples:
+	 *   const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
+	 *   const BACKEND_BASE_URL = "http://localhost:3000";
+	 */
+	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
+
+	const STORAGE_KEY = "askeladds_oc_planner_api_key";
+	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
+	const PANEL_ID = "askeladds-oc-planner-panel";
+	const REQUEST_TIMEOUT_MS = 60000;
+	const AUTO_REFRESH_MS = 5 * 60 * 1000;
+
+	const state = {
+		profile: null,
+		lastPlanner: null,
+		lastPayload: null,
+		loading: false,
+		error: "",
+		progress: "",
+		autoRefreshTimer: undefined,
+		active: false,
+		collapsed: false,
+		disclosureOpen: false,
+	};
+
+	let lastRenderedMarkup = "";
+
+	GM_addStyle(`
+		#${PANEL_ID} {
+			position: fixed;
+			right: 14px;
+			bottom: 14px;
+			z-index: 999999;
+			width: min(380px, calc(100vw - 28px));
+			font: 13px/1.45 Arial, Helvetica, sans-serif;
+			color: #e7ecf3;
+			background: #111820;
+			border: 1px solid #2d3b4b;
+			box-shadow: 0 12px 36px rgba(0, 0, 0, 0.42);
+		}
+		#${PANEL_ID}.collapsed .ocp-body {
+			display: none;
+		}
+		#${PANEL_ID} * {
+			box-sizing: border-box;
+		}
+		#${PANEL_ID} button,
+		#${PANEL_ID} input {
+			font: inherit;
+		}
+		#${PANEL_ID} .ocp-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 8px;
+			padding: 9px 10px;
+			background: #1a2530;
+			border-bottom: 1px solid #2d3b4b;
+		}
+		#${PANEL_ID} .ocp-title {
+			font-weight: 700;
+			letter-spacing: 0;
+		}
+		#${PANEL_ID} .ocp-actions {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+		}
+		#${PANEL_ID} .ocp-icon-button,
+		#${PANEL_ID} .ocp-button {
+			border: 1px solid #3a4b5c;
+			background: #223040;
+			color: #e7ecf3;
+			cursor: pointer;
+		}
+		#${PANEL_ID} .ocp-icon-button {
+			width: 26px;
+			height: 26px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			padding: 0;
+		}
+		#${PANEL_ID} .ocp-button {
+			padding: 7px 9px;
+		}
+		#${PANEL_ID} .ocp-icon-button:hover,
+		#${PANEL_ID} .ocp-button:hover {
+			background: #2c3c4f;
+		}
+		#${PANEL_ID} .ocp-button.primary {
+			border-color: #5284c7;
+			background: #285582;
+		}
+		#${PANEL_ID} .ocp-button.danger {
+			border-color: #8a3e45;
+			background: #51252b;
+		}
+		#${PANEL_ID} .ocp-body {
+			padding: 10px;
+		}
+		#${PANEL_ID} .ocp-row {
+			display: flex;
+			gap: 7px;
+			margin-top: 8px;
+		}
+		#${PANEL_ID} .ocp-row input {
+			min-width: 0;
+			flex: 1;
+		}
+		#${PANEL_ID} .ocp-input {
+			width: 100%;
+			border: 1px solid #354454;
+			background: #0d131a;
+			color: #e7ecf3;
+			padding: 8px;
+		}
+		#${PANEL_ID} .ocp-muted {
+			color: #a8b3c0;
+		}
+		#${PANEL_ID} .ocp-error {
+			margin-top: 8px;
+			color: #ffd5d5;
+			background: #3b171c;
+			border: 1px solid #75303a;
+			padding: 8px;
+		}
+		#${PANEL_ID} .ocp-status {
+			margin-top: 8px;
+			color: #b9d8ff;
+		}
+		#${PANEL_ID} .ocp-card {
+			margin-top: 9px;
+			padding: 9px;
+			border: 1px solid #344353;
+			background: #151e28;
+		}
+		#${PANEL_ID} .ocp-card.next {
+			border-color: #70a66d;
+			background: #15251d;
+		}
+		#${PANEL_ID} .ocp-card-link {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			margin-top: 8px;
+			width: 100%;
+			border: 1px solid #82b77b;
+			background: #264d2e;
+			color: #f2fff1;
+			padding: 7px 8px;
+			text-decoration: none;
+			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-card-link:hover {
+			background: #32633b;
+		}
+		.askeladds-oc-planner-highlight {
+			outline: 3px solid #82d173 !important;
+			box-shadow: 0 0 0 3px rgba(130, 209, 115, 0.28), 0 0 18px rgba(130, 209, 115, 0.55) !important;
+		}
+		#${PANEL_ID} .ocp-card.need-more {
+			border-color: #aa8f53;
+			background: #2a2416;
+		}
+		#${PANEL_ID} .ocp-card-title {
+			font-weight: 700;
+			font-size: 14px;
+			margin-bottom: 4px;
+		}
+		#${PANEL_ID} .ocp-grid {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 4px 10px;
+			margin-top: 7px;
+		}
+		#${PANEL_ID} .ocp-label {
+			color: #a8b3c0;
+		}
+		#${PANEL_ID} .ocp-value {
+			text-align: right;
+			overflow-wrap: anywhere;
+		}
+		#${PANEL_ID} .ocp-footer {
+			margin-top: 8px;
+			font-size: 12px;
+			color: #9ba8b7;
+		}
+		#${PANEL_ID} .ocp-disclosure {
+			margin-top: 8px;
+			border: 1px solid #718095;
+			background: #f4f7fb;
+			color: #17202b;
+		}
+		#${PANEL_ID} .ocp-disclosure summary {
+			cursor: pointer;
+			padding: 8px;
+			color: #111820;
+			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-disclosure table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+			background: #ffffff;
+		}
+		#${PANEL_ID} .ocp-disclosure th,
+		#${PANEL_ID} .ocp-disclosure td {
+			border-top: 1px solid #d3dbe6;
+			padding: 6px;
+			text-align: left;
+			vertical-align: top;
+			color: #17202b;
+		}
+		#${PANEL_ID} .ocp-disclosure th {
+			width: 38%;
+			color: #354255;
+			font-weight: 700;
+		}
+		@media (max-width: 520px) {
+			#${PANEL_ID} {
+				right: 8px;
+				bottom: 8px;
+				width: calc(100vw - 16px);
+			}
+			#${PANEL_ID} .ocp-grid {
+				grid-template-columns: 1fr;
+			}
+			#${PANEL_ID} .ocp-value {
+				text-align: left;
+			}
+		}
+	`);
+
+	GM_registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
+	GM_registerMenuCommand("OC Planner: forget API key", () => {
+		GM_deleteValue(STORAGE_KEY);
+		GM_deleteValue(PROFILE_STORAGE_KEY);
+		state.profile = null;
+		state.lastPlanner = null;
+		state.lastPayload = null;
+		state.error = "";
+		state.progress = "";
+		state.disclosureOpen = false;
+		render();
+	});
+
+	const escapeHtml = (value) =>
+		String(value ?? "")
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#039;");
+
+	const getBackendBaseUrl = () => BACKEND_BASE_URL.replace(/\/+$/, "");
+
+	const getBackendHttpBaseUrl = () => getBackendBaseUrl().replace(/\/ws$/i, "");
+
+	const getBackendApiUrl = (path) => {
+		const base = getBackendHttpBaseUrl();
+		if (!base || /YOUR_BACKEND_HOST/i.test(base)) {
+			throw new Error("Backend URL is not configured in the userscript.");
+		}
+		return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+	};
+
+	const requestJson = (options) =>
+		new Promise((resolve, reject) => {
+			GM_xmlhttpRequest({
+				method: options.method || "GET",
+				url: options.url,
+				headers: options.headers || {},
+				data: options.data,
+				timeout: options.timeout || REQUEST_TIMEOUT_MS,
+				onload: (response) => {
+					const status = Number(response.status || 0);
+					const contentType = String(response.responseHeaders || "")
+						.split(/\r?\n/)
+						.find((header) => /^content-type:/i.test(header))
+						?.replace(/^content-type:\s*/i, "")
+						.trim();
+					if (status < 200 || status >= 300) {
+						reject(new Error(`${options.label || "Request"} failed with HTTP ${status}.`));
+						return;
+					}
+					if (contentType && !/json/i.test(contentType)) {
+						const preview = String(response.responseText || "")
+							.replace(/\s+/g, " ")
+							.slice(0, 120);
+						reject(
+							new Error(
+								`${options.label || "Request"} expected JSON but got ${contentType}. The backend URL is probably routed to the frontend instead of the Express API. Response starts with: ${preview}`
+							)
+						);
+						return;
+					}
+					try {
+						resolve(JSON.parse(response.responseText || "null"));
+					} catch {
+						reject(new Error(`${options.label || "Request"} returned invalid JSON.`));
+					}
+				},
+				onerror: () => reject(new Error(`${options.label || "Request"} failed. Check the URL and network access.`)),
+				ontimeout: () => reject(new Error(`${options.label || "Request"} timed out.`)),
+			});
+		});
+
+	const getProfileWithKey = async (key) => {
+		const url = `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(key)}&timestamp=${Date.now()}`;
+		let profile = await requestJson({ url, label: "Torn profile request" });
+		if (profile?.error?.code === 16 || /access level/i.test(String(profile?.error?.error || ""))) {
+			profile = await requestJson({
+				url: `https://api.torn.com/user/?selections=&key=${encodeURIComponent(key)}&timestamp=${Date.now()}`,
+				label: "Torn profile fallback request",
+			});
+		}
+		if (profile?.error) {
+			throw new Error(profile.error.error || "Torn API rejected this key.");
+		}
+		if (!profile?.player_id) {
+			throw new Error("Torn API did not return a player profile for this key.");
+		}
+		return profile;
+	};
+
+	const getLatestPlanner = async () => {
+		const payload = await requestJson({
+			url: getBackendApiUrl(`/api/oc-planner/bot-alerts?timestamp=${Date.now()}`),
+			label: "OC Planner snapshot request",
+		});
+		if (!payload?.planner) {
+			throw new Error("No saved OC planner run was returned by the backend.");
+		}
+		return payload.planner;
+	};
+
+	const getStoredKey = () => String(GM_getValue(STORAGE_KEY, "") || "").trim();
+
+	const saveStoredKey = (key) => {
+		const trimmed = String(key || "").trim();
+		if (trimmed) GM_setValue(STORAGE_KEY, trimmed);
+	};
+
+	const getKeyCacheId = (key) => {
+		const value = String(key || "").trim();
+		if (!value) return "";
+		return `${value.length}:${value.slice(0, 4)}:${value.slice(-4)}`;
+	};
+
+	const getCachedProfile = (key) => {
+		const keyCacheId = getKeyCacheId(key);
+		if (!keyCacheId) return null;
+		try {
+			const cached = JSON.parse(String(GM_getValue(PROFILE_STORAGE_KEY, "") || ""));
+			if (cached?.keyCacheId !== keyCacheId || !cached?.profile?.player_id) return null;
+			return cached.profile;
+		} catch {
+			return null;
+		}
+	};
+
+	const saveCachedProfile = (key, profile) => {
+		if (!profile?.player_id) return;
+		GM_setValue(
+			PROFILE_STORAGE_KEY,
+			JSON.stringify({
+				keyCacheId: getKeyCacheId(key),
+				profile,
+				savedAt: new Date().toISOString(),
+			})
+		);
+	};
+
+	const clearCachedProfile = () => {
+		GM_deleteValue(PROFILE_STORAGE_KEY);
+		state.profile = null;
+	};
+
+	const isOcCrimesPage = () => {
+		const url = new URL(window.location.href);
+		const hash = decodeURIComponent(url.hash || "").toLowerCase();
+		const fullUrl = decodeURIComponent(window.location.href).toLowerCase();
+		return (
+			url.hostname.replace(/^www\./, "") === "torn.com" &&
+			url.pathname === "/factions.php" &&
+			(url.searchParams.get("step") === "your" || fullUrl.includes("step=your")) &&
+			(url.searchParams.get("type") === "1" || fullUrl.includes("type=1")) &&
+			(hash.includes("tab=crimes") || fullUrl.includes("tab=crimes"))
+		);
+	};
+
+	const removePanel = () => {
+		document.getElementById(PANEL_ID)?.remove();
+		lastRenderedMarkup = "";
+		if (state.autoRefreshTimer) {
+			window.clearTimeout(state.autoRefreshTimer);
+			state.autoRefreshTimer = undefined;
+		}
+	};
+
+	const formatTimestamp = (secondsOrIso) => {
+		if (!secondsOrIso) return "";
+		const date =
+			typeof secondsOrIso === "number"
+				? new Date(secondsOrIso * 1000)
+				: new Date(secondsOrIso);
+		if (Number.isNaN(date.getTime())) return "";
+		return date.toLocaleString(undefined, {
+			month: "short",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		});
+	};
+
+	const formatRelative = (seconds) => {
+		if (!seconds) return "now";
+		const diff = seconds - Math.floor(Date.now() / 1000);
+		if (diff <= 0) return "now";
+		const minutes = Math.round(diff / 60);
+		if (minutes < 60) return `${minutes}m`;
+		const hours = Math.floor(minutes / 60);
+		const remainingMinutes = minutes % 60;
+		if (hours < 48) return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+		const days = Math.floor(hours / 24);
+		const remainingHours = hours % 24;
+		return remainingHours ? `${days}d ${remainingHours}h` : `${days}d`;
+	};
+
+	const formatChance = (chance) => {
+		const numeric = Number(chance);
+		if (!Number.isFinite(numeric)) return "";
+		return `${(numeric * 100).toFixed(1)}%`;
+	};
+
+	const getCrimeUrl = (crimeId) => {
+		const id = Number(crimeId || 0);
+		if (!id) return "https://www.torn.com/factions.php?step=your&type=1#/tab=crimes";
+		return `https://www.torn.com/factions.php?step=your&type=1#/tab=crimes&crimeId=${id}`;
+	};
+
+	const highlightRecommendedCrime = (crimeId) => {
+		const id = String(crimeId || "");
+		if (!id) return;
+		document
+			.querySelectorAll(".askeladds-oc-planner-highlight")
+			.forEach((element) => element.classList.remove("askeladds-oc-planner-highlight"));
+
+		const candidates = Array.from(document.querySelectorAll("a[href], button, [data-crime-id], [data-crimeid], [data-id]"));
+		const match = candidates.find((element) => {
+			const href = element.getAttribute("href") || "";
+			const dataCrimeId =
+				element.getAttribute("data-crime-id") ||
+				element.getAttribute("data-crimeid") ||
+				element.getAttribute("data-id") ||
+				"";
+			return href.includes(`crimeId=${id}`) || href.includes(`crimeID=${id}`) || dataCrimeId === id;
+		});
+		const target = match?.closest("li, tr, [class*='crime'], [class*='Crime'], [class*='card'], [class*='row']") || match;
+		target?.classList.add("askeladds-oc-planner-highlight");
+		target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+	};
+
+	const findSlotRecommendations = (planner, memberId) => {
+		const recommendations = [];
+		for (const crime of planner?.crimes || []) {
+			for (const slot of crime.slots || []) {
+				const recommended =
+					Number(slot.recommended?.memberId) === memberId
+						? slot.recommended
+						: Number(slot.soonRecommended?.memberId) === memberId
+							? slot.soonRecommended
+							: undefined;
+
+				if (!recommended) continue;
+
+				recommendations.push({
+					type: "slot",
+					crimeId: crime.id,
+					crimeName: crime.name || slot.crimeName || recommended.cprCrimeName,
+					difficulty: crime.difficulty,
+					status: crime.status || slot.status,
+					position: slot.position,
+					role: slot.role || recommended.cprRoleName,
+					roleImpactLabel: slot.roleImpactLabel,
+					cpr: recommended.cpr,
+					available: recommended.available,
+					availableAt: recommended.availableAt,
+					currentCrimeId: recommended.currentCrimeId,
+					currentCrimeName: recommended.currentCrimeName,
+					planningState: slot.planningState,
+					planningStep: slot.planningStep,
+					globalPlanningStep: slot.globalPlanningStep,
+					estimatedStartWaitHours: slot.estimatedStartWaitHours,
+					plannedStartAt: slot.plannedStartAt,
+					plannedMemberEndAt: slot.plannedMemberEndAt,
+					plannedOcCompleteAt: slot.plannedOcCompleteAt,
+					successChance: crime.recommendedSuccessChance,
+					successBand: crime.successBand,
+					warnings: crime.warnings || [],
+				});
+			}
+		}
+		return recommendations.sort(
+			(a, b) =>
+				(a.globalPlanningStep || 9999) - (b.globalPlanningStep || 9999) ||
+				(a.planningStep || 9999) - (b.planningStep || 9999) ||
+				(a.plannedStartAt || 0) - (b.plannedStartAt || 0)
+		);
+	};
+
+	const findPlanningSteps = (planner, memberId) =>
+		(planner?.planningSteps || [])
+			.filter((step) => Number(step.memberId) === memberId)
+			.sort(
+				(a, b) =>
+					(a.globalStep || 9999) - (b.globalStep || 9999) ||
+					(a.step || 9999) - (b.step || 9999)
+			);
+
+	const findUnassigned = (planner, memberId) =>
+		(planner?.unassignedMembers || []).filter(
+			(member) => Number(member.memberId) === memberId
+		);
+
+	const buildMemberPayload = (profile, planner) => {
+		const memberId = Number(profile?.player_id || profile?.profile?.player_id || 0);
+		const memberName =
+			profile?.name ||
+			profile?.player_name ||
+			profile?.profile?.name ||
+			profile?.profile?.player_name ||
+			(memberId ? `Player ${memberId}` : "");
+		const recommendations = findSlotRecommendations(planner, memberId);
+		const planningSteps = findPlanningSteps(planner, memberId);
+		const unassigned = findUnassigned(planner, memberId);
+		const missingCpr = (planner?.missingCprMembers || []).some(
+			(member) => Number(member.memberId) === memberId
+		);
+
+		return {
+			memberId,
+			memberName,
+			plannerGeneratedAt: planner?.generatedAt,
+			summary: planner?.summary,
+			recommendations,
+			planningSteps,
+			unassigned,
+			missingCpr,
+			warnings: planner?.warnings || [],
+		};
+	};
+
+	const syncInteractiveState = () => {
+		const panel = document.getElementById(PANEL_ID);
+		if (!panel) return;
+		state.collapsed = panel.classList.contains("collapsed");
+		state.disclosureOpen = !!panel.querySelector(".ocp-disclosure")?.open;
+	};
+
+	const refreshRecommendations = async (force) => {
+		if (state.loading) return;
+
+		const keyInput = document.querySelector(`#${PANEL_ID} .ocp-api-key`);
+		const key = String(keyInput?.value || getStoredKey()).trim();
+		if (!key) {
+			state.error = "Enter your Torn API key first.";
+			render();
+			return;
+		}
+
+		saveStoredKey(key);
+		state.loading = true;
+		state.error = "";
+		state.progress = "Loading your Torn profile...";
+		render();
+
+		try {
+			state.profile = getCachedProfile(key);
+			if (!state.profile) {
+				state.progress = "Validating API key with Torn...";
+				render();
+				state.profile = await getProfileWithKey(key);
+				saveCachedProfile(key, state.profile);
+			}
+
+			state.progress = "Loading latest OC planner snapshot...";
+			render();
+
+			const planner = await getLatestPlanner();
+
+			state.lastPlanner = planner;
+			state.lastPayload = buildMemberPayload(state.profile, planner);
+			state.progress = "";
+			state.error = "";
+			scheduleAutoRefresh();
+			const firstCrimeId = state.lastPayload?.recommendations?.[0]?.crimeId;
+			window.setTimeout(() => highlightRecommendedCrime(firstCrimeId), 400);
+		} catch (error) {
+			state.error = error?.message || "Could not load OC recommendation.";
+			state.progress = "";
+		} finally {
+			state.loading = false;
+			render();
+		}
+	};
+
+	const scheduleAutoRefresh = () => {
+		if (state.autoRefreshTimer) window.clearTimeout(state.autoRefreshTimer);
+		state.autoRefreshTimer = window.setTimeout(() => {
+			if (state.active && isOcCrimesPage() && getStoredKey()) {
+				refreshRecommendations(false);
+			}
+		}, AUTO_REFRESH_MS);
+	};
+
+	const recommendationCard = (recommendation, index) => {
+		const isNext = recommendation.planningState === "next" || index === 0;
+		const crimeUrl = getCrimeUrl(recommendation.crimeId);
+		const startLabel =
+			recommendation.plannedStartAt && recommendation.plannedStartAt > Math.floor(Date.now() / 1000)
+				? `${formatRelative(recommendation.plannedStartAt)} (${formatTimestamp(recommendation.plannedStartAt)})`
+				: "now";
+		const successChance = formatChance(recommendation.successChance);
+		const step = recommendation.planningStep;
+
+		return `
+			<div class="ocp-card ${isNext ? "next" : ""}">
+				<div class="ocp-card-title">${escapeHtml(isNext ? "Join Next" : "Queued Recommendation")}</div>
+				<div>${escapeHtml(recommendation.crimeName || "Organized crime")}</div>
+				<div class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</div>
+				<div class="ocp-grid">
+					<div class="ocp-label">Start</div>
+					<div class="ocp-value">${escapeHtml(startLabel)}</div>
+					<div class="ocp-label">CPR</div>
+					<div class="ocp-value">${escapeHtml(Math.round(Number(recommendation.cpr || 0)))}%</div>
+					${successChance ? `<div class="ocp-label">Success</div><div class="ocp-value">${escapeHtml(successChance)}</div>` : ""}
+					${step ? `<div class="ocp-label">Your step</div><div class="ocp-value">#${escapeHtml(step)}</div>` : ""}
+					${recommendation.difficulty ? `<div class="ocp-label">Tier</div><div class="ocp-value">T${escapeHtml(recommendation.difficulty)}</div>` : ""}
+					${recommendation.currentCrimeName ? `<div class="ocp-label">When you're done with</div><div class="ocp-value">${escapeHtml(recommendation.currentCrimeName)}</div>` : ""}
+				</div>
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}">Open OC #${escapeHtml(recommendation.crimeId)}</a>
+			</div>
+		`;
+	};
+
+	const unassignedCard = (member) => `
+		<div class="ocp-card need-more">
+			<div class="ocp-card-title">No Slot Assigned</div>
+			<div>Planner knows your CPR, but there is no good open slot for you right now.</div>
+			<div class="ocp-grid">
+				${member.bestCprCrimeName ? `<div class="ocp-label">Best fit</div><div class="ocp-value">${escapeHtml(member.bestCprCrimeName)}</div>` : ""}
+				${member.bestCprRoleName ? `<div class="ocp-label">Role</div><div class="ocp-value">${escapeHtml(member.bestCprRoleName)}</div>` : ""}
+				${member.bestCpr ? `<div class="ocp-label">CPR</div><div class="ocp-value">${escapeHtml(Math.round(Number(member.bestCpr)))}%</div>` : ""}
+				${member.availableAt ? `<div class="ocp-label">Available</div><div class="ocp-value">${escapeHtml(formatRelative(member.availableAt))}</div>` : ""}
+			</div>
+		</div>
+	`;
+
+	const renderResults = () => {
+		const payload = state.lastPayload;
+		if (!payload) return "";
+
+		const cards = payload.recommendations.map(recommendationCard).join("");
+		const unassigned = !payload.recommendations.length
+			? payload.unassigned.map(unassignedCard).join("")
+			: "";
+		const missingCpr = payload.missingCpr
+			? `<div class="ocp-card need-more"><div class="ocp-card-title">Missing CPR</div><div>Your CPR is missing from TornStats/Supabase, so the planner cannot place you yet.</div></div>`
+			: "";
+		const empty = !cards && !unassigned && !missingCpr
+			? `<div class="ocp-card"><div class="ocp-card-title">Nothing To Join</div><div>No personal OC recommendation was found in the latest planner run.</div></div>`
+			: "";
+
+		return `
+			<div class="ocp-status">
+				${escapeHtml(payload.memberName || "You")}
+				${payload.plannerGeneratedAt ? ` - planner ${escapeHtml(formatTimestamp(payload.plannerGeneratedAt))}` : ""}
+			</div>
+			${cards}
+			${unassigned}
+			${missingCpr}
+			${empty}
+		`;
+	};
+
+	const render = () => {
+		if (!state.active || !isOcCrimesPage()) {
+			removePanel();
+			return;
+		}
+
+		syncInteractiveState();
+		let panel = document.getElementById(PANEL_ID);
+		if (!panel) {
+			panel = document.createElement("div");
+			panel.id = PANEL_ID;
+			document.body.appendChild(panel);
+			if (state.collapsed) panel.classList.add("collapsed");
+		}
+
+		const savedKey = getStoredKey();
+		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
+		const collapsed = state.collapsed;
+
+		const markup = `
+			<div class="ocp-header">
+				<div class="ocp-title">OC Planner</div>
+				<div class="ocp-actions">
+					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
+				</div>
+			</div>
+			<div class="ocp-body">
+				${backendConfigured ? "" : `<div class="ocp-error">Set BACKEND_BASE_URL in the userscript before using it.</div>`}
+				<div class="ocp-muted">Torn API key</div>
+				<div class="ocp-row">
+					<input class="ocp-input ocp-api-key" type="password" value="${escapeHtml(savedKey)}" placeholder="Paste Torn API key">
+					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
+				</div>
+				<div class="ocp-row">
+					<button class="ocp-button ocp-refresh">Refresh cached plan</button>
+					<button class="ocp-button danger ocp-forget">Forget key</button>
+				</div>
+				${state.progress ? `<div class="ocp-status">${escapeHtml(state.progress)}</div>` : ""}
+				${state.error ? `<div class="ocp-error">${escapeHtml(state.error)}</div>` : ""}
+				${renderResults()}
+				<details class="ocp-disclosure"${state.disclosureOpen ? " open" : ""}>
+					<summary>API key use</summary>
+					<table>
+						<tr><th>Data storage</th><td>API key and profile cache are stored locally in Tampermonkey.</td></tr>
+						<tr><th>Data sharing</th><td>Your key is sent to Torn's official API for profile lookup. It is not sent to the OC Planner backend.</td></tr>
+						<tr><th>Purpose of use</th><td>Show your own OC Planner recommendation on the faction crimes page.</td></tr>
+						<tr><th>Key storage and sharing</th><td>Stored locally only. The userscript never asks the backend to save your key.</td></tr>
+						<tr><th>Required access</th><td>Enough access for Torn profile lookup. OC data is fetched from the backend's latest saved planner snapshot.</td></tr>
+					</table>
+				</details>
+				<div class="ocp-footer">Displays advice only. It does not click, join, submit, or automate Torn actions.</div>
+			</div>
+		`;
+
+		if (markup === lastRenderedMarkup) return;
+		panel.innerHTML = markup;
+		lastRenderedMarkup = markup;
+		panel.classList.toggle("collapsed", state.collapsed);
+
+		panel.querySelector(".ocp-collapse")?.addEventListener("click", () => {
+			state.collapsed = !state.collapsed;
+			render();
+		});
+		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
+			state.disclosureOpen = !!event.currentTarget.open;
+		});
+		panel.querySelectorAll(".ocp-card-link").forEach((link) => {
+			link.addEventListener("click", () => {
+				window.setTimeout(() => highlightRecommendedCrime(link.dataset.ocpCrimeId), 400);
+				window.setTimeout(() => highlightRecommendedCrime(link.dataset.ocpCrimeId), 1200);
+			});
+		});
+		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
+		panel.querySelector(".ocp-refresh")?.addEventListener("click", () => refreshRecommendations(false));
+		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
+			GM_deleteValue(STORAGE_KEY);
+			GM_deleteValue(PROFILE_STORAGE_KEY);
+			state.profile = null;
+			state.lastPlanner = null;
+			state.lastPayload = null;
+			state.error = "";
+			state.progress = "";
+			state.disclosureOpen = false;
+			render();
+		});
+		panel.querySelector(".ocp-api-key")?.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") refreshRecommendations(false);
+		});
+	};
+
+	const start = () => {
+		state.active = isOcCrimesPage();
+		render();
+		if (state.active && getStoredKey() && !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl())) {
+			refreshRecommendations(false);
+		}
+	};
+
+	const syncPageActivation = () => {
+		const shouldBeActive = isOcCrimesPage();
+		if (state.active === shouldBeActive) {
+			return;
+		}
+
+		state.active = shouldBeActive;
+		if (!shouldBeActive) {
+			removePanel();
+			return;
+		}
+
+		render();
+		if (getStoredKey() && !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl())) {
+			refreshRecommendations(false);
+		}
+	};
+
+	window.addEventListener("hashchange", syncPageActivation);
+	window.addEventListener("popstate", syncPageActivation);
+	window.setInterval(syncPageActivation, 1500);
+
+	if (document.readyState === "loading") {
+		document.addEventListener("DOMContentLoaded", start, { once: true });
+	} else {
+		start();
+	}
+})();
