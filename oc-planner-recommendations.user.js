@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.14
+// @version      0.2.15
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -90,6 +90,7 @@
 		active: false,
 		collapsed: false,
 		disclosureOpen: false,
+		pendingHighlight: null,
 	};
 
 	let lastRenderedMarkup = "";
@@ -802,12 +803,27 @@
 		const roleElement = findRoleElement(crimeElement, recommendation);
 		roleElement?.classList.add("askeladds-oc-planner-role-highlight");
 		(roleElement || crimeElement)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+		return !!roleElement;
 	};
 
 	const queueHighlightRecommendation = (recommendation) => {
-		[400, 1200, 2500].forEach((delay) => {
-			window.setTimeout(() => highlightRecommendation(recommendation), delay);
+		if (!recommendation?.crimeId) return;
+		state.pendingHighlight = {
+			recommendation,
+			startedAt: Date.now(),
+		};
+		[250, 700, 1200, 2000, 3500, 5500, 8000].forEach((delay) => {
+			window.setTimeout(() => retryPendingHighlight(), delay);
 		});
+	};
+
+	const retryPendingHighlight = () => {
+		const pending = state.pendingHighlight;
+		if (!pending) return;
+		const foundRole = highlightRecommendation(pending.recommendation);
+		if (foundRole || Date.now() - pending.startedAt > 9000) {
+			state.pendingHighlight = null;
+		}
 	};
 
 	const getMemberId = (member) =>
@@ -1282,8 +1298,16 @@
 		}
 	};
 
-	window.addEventListener("hashchange", syncPageActivation);
-	window.addEventListener("popstate", syncPageActivation);
+	window.addEventListener("hashchange", () => {
+		syncPageActivation();
+		window.setTimeout(() => retryPendingHighlight(), 600);
+		window.setTimeout(() => retryPendingHighlight(), 1600);
+	});
+	window.addEventListener("popstate", () => {
+		syncPageActivation();
+		window.setTimeout(() => retryPendingHighlight(), 600);
+		window.setTimeout(() => retryPendingHighlight(), 1600);
+	});
 	window.setInterval(syncPageActivation, 1500);
 
 	if (document.readyState === "loading") {
