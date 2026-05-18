@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.10
+// @version      0.2.11
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -262,6 +262,26 @@
 			text-align: right;
 			overflow-wrap: anywhere;
 		}
+		#${PANEL_ID} .ocp-stat-row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 3px 8px;
+			margin-top: 4px;
+		}
+		#${PANEL_ID} .ocp-stat {
+			display: inline-flex;
+			gap: 3px;
+			min-width: 0;
+			white-space: normal;
+		}
+		#${PANEL_ID} .ocp-stat-label {
+			color: #a8b3c0;
+			flex: 0 0 auto;
+		}
+		#${PANEL_ID} .ocp-stat-value {
+			color: #e7ecf3;
+			overflow-wrap: anywhere;
+		}
 		#${PANEL_ID} .ocp-footer {
 			margin-top: 6px;
 			font-size: 12px;
@@ -276,6 +296,35 @@
 			color: #a8b3c0;
 			font-weight: 700;
 			margin-bottom: 3px;
+		}
+		#${PANEL_ID} .ocp-team-chips {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 4px;
+		}
+		#${PANEL_ID} .ocp-team-chip {
+			display: inline-flex;
+			gap: 3px;
+			max-width: 100%;
+			border: 1px solid #354454;
+			background: #101820;
+			padding: 2px 5px;
+		}
+		#${PANEL_ID} .ocp-team-chip.you {
+			border-color: #70a66d;
+			background: #172719;
+		}
+		#${PANEL_ID} .ocp-chip-slot {
+			color: #a8b3c0;
+			flex: 0 0 auto;
+		}
+		#${PANEL_ID} .ocp-chip-member {
+			color: #e7ecf3;
+			overflow-wrap: anywhere;
+		}
+		#${PANEL_ID} .ocp-team-chip.you .ocp-chip-member {
+			color: #b7f5b1;
+			font-weight: 700;
 		}
 		#${PANEL_ID} .ocp-team-row {
 			display: grid;
@@ -1018,6 +1067,16 @@
 		}, AUTO_REFRESH_MS);
 	};
 
+	const statItem = (label, value) =>
+		value
+			? `<span class="ocp-stat"><span class="ocp-stat-label">${escapeHtml(label)}</span><span class="ocp-stat-value">${escapeHtml(value)}</span></span>`
+			: "";
+
+	const statRow = (...items) => {
+		const markup = items.filter(Boolean).join("");
+		return markup ? `<div class="ocp-stat-row">${markup}</div>` : "";
+	};
+
 	const recommendationCard = (recommendation, index) => {
 		const isNext = recommendation.planningState === "next" || index === 0;
 		const crimeUrl = getCrimeUrl(recommendation.crimeId);
@@ -1030,10 +1089,10 @@
 		const expectedTeam = (recommendation.expectedTeam || [])
 			.map(
 				(member) => `
-					<div class="ocp-team-row ${member.isYou ? "you" : ""}">
-						<div class="ocp-team-slot">${escapeHtml(member.slot)}</div>
-						<div class="ocp-team-member">${escapeHtml(member.memberName)}</div>
-					</div>
+					<span class="ocp-team-chip ${member.isYou ? "you" : ""}">
+						<span class="ocp-chip-slot">${escapeHtml(member.slot)}:</span>
+						<span class="ocp-chip-member">${escapeHtml(member.memberName)}</span>
+					</span>
 				`
 			)
 			.join("");
@@ -1043,17 +1102,17 @@
 				<div class="ocp-card-title">${escapeHtml(isNext ? "Join Next" : "Queued Recommendation")}</div>
 				<div>${escapeHtml(recommendation.crimeName || "Organized crime")}</div>
 				<div class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</div>
-				<div class="ocp-grid">
-					<div class="ocp-label">Start</div>
-					<div class="ocp-value">${escapeHtml(startLabel)}</div>
-					<div class="ocp-label">CPR</div>
-					<div class="ocp-value">${escapeHtml(Math.round(Number(recommendation.cpr || 0)))}%</div>
-					${successChance ? `<div class="ocp-label">Success</div><div class="ocp-value">${escapeHtml(successChance)}</div>` : ""}
-					${step ? `<div class="ocp-label">Your step</div><div class="ocp-value">#${escapeHtml(step)}</div>` : ""}
-					${recommendation.difficulty ? `<div class="ocp-label">Tier</div><div class="ocp-value">T${escapeHtml(recommendation.difficulty)}</div>` : ""}
-					${recommendation.currentCrimeName ? `<div class="ocp-label">When you're done with</div><div class="ocp-value">${escapeHtml(recommendation.currentCrimeName)}</div>` : ""}
-				</div>
-				${expectedTeam ? `<div class="ocp-team"><div class="ocp-team-title">Expected team</div>${expectedTeam}</div>` : ""}
+				${statRow(statItem("Start", startLabel))}
+				${statRow(
+					statItem("CPR", `${Math.round(Number(recommendation.cpr || 0))}%`),
+					statItem("Success", successChance),
+					statItem("Tier", recommendation.difficulty ? `T${recommendation.difficulty}` : "")
+				)}
+				${statRow(
+					statItem("Done", recommendation.currentCrimeName),
+					statItem("Step", step ? `#${step}` : "")
+				)}
+				${expectedTeam ? `<div class="ocp-team"><div class="ocp-team-title">Expected team</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
 				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Go to OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
