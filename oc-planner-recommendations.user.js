@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.5
+// @version      0.2.6
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -54,7 +54,7 @@
 			}
 			window.localStorage?.setItem(key, String(value));
 		},
-		delete(key) {
+		remove(key) {
 			if (typeof GM_deleteValue === "function") {
 				GM_deleteValue(key);
 				return;
@@ -307,8 +307,8 @@
 
 	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
 	registerMenuCommand("OC Planner: forget API key", () => {
-		storage.delete(STORAGE_KEY);
-		storage.delete(PROFILE_STORAGE_KEY);
+		storage.remove(STORAGE_KEY);
+		storage.remove(PROFILE_STORAGE_KEY);
 		state.profile = null;
 		state.lastPlanner = null;
 		state.lastPayload = null;
@@ -510,7 +510,7 @@
 	};
 
 	const clearCachedProfile = () => {
-		storage.delete(PROFILE_STORAGE_KEY);
+		storage.remove(PROFILE_STORAGE_KEY);
 		state.profile = null;
 	};
 
@@ -992,8 +992,8 @@
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
-			storage.delete(STORAGE_KEY);
-			storage.delete(PROFILE_STORAGE_KEY);
+			storage.remove(STORAGE_KEY);
+			storage.remove(PROFILE_STORAGE_KEY);
 			state.profile = null;
 			state.lastPlanner = null;
 			state.lastPayload = null;
