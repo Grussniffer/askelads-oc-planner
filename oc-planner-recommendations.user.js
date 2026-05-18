@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.9
+// @version      0.2.10
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -943,6 +943,26 @@
 		state.disclosureOpen = !!panel.querySelector(".ocp-disclosure")?.open;
 	};
 
+	const setCollapsed = (collapsed) => {
+		state.collapsed = !!collapsed;
+		document.getElementById(PANEL_ID)?.classList.toggle("collapsed", state.collapsed);
+		render();
+	};
+
+	const addTapHandler = (element, handler) => {
+		if (!element) return;
+		let lastTouchAt = 0;
+		element.addEventListener("touchend", (event) => {
+			lastTouchAt = Date.now();
+			event.preventDefault();
+			handler(event);
+		});
+		element.addEventListener("click", (event) => {
+			if (Date.now() - lastTouchAt < 500) return;
+			handler(event);
+		});
+	};
+
 	const refreshRecommendations = async (force) => {
 		if (state.loading) return;
 
@@ -1139,11 +1159,10 @@
 		panel.classList.toggle("collapsed", state.collapsed);
 
 		const toggleCollapsed = () => {
-			state.collapsed = !state.collapsed;
-			render();
+			setCollapsed(!state.collapsed);
 		};
-		panel.querySelector(".ocp-header")?.addEventListener("click", toggleCollapsed);
-		panel.querySelector(".ocp-collapse")?.addEventListener("click", (event) => {
+		addTapHandler(panel.querySelector(".ocp-header"), toggleCollapsed);
+		addTapHandler(panel.querySelector(".ocp-collapse"), (event) => {
 			event.stopPropagation();
 			toggleCollapsed();
 		});
@@ -1158,8 +1177,7 @@
 					position: link.dataset.ocpPosition,
 					roleImpactLabel: link.dataset.ocpRoleImpact,
 				};
-				state.collapsed = true;
-				render();
+				setCollapsed(true);
 				queueHighlightRecommendation(recommendation);
 			});
 		});
