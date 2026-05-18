@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.17
+// @version      0.2.18
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -1255,12 +1255,18 @@
 				roleImpactLabel: link.dataset.ocpRoleImpact,
 			};
 			const prepareOcNavigation = () => {
-				collapsePanelWithoutRender();
 				queueHighlightRecommendation(recommendation);
+			};
+			const collapseAfterNavigationTap = () => {
+				window.setTimeout(() => collapsePanelWithoutRender(), 50);
 			};
 			link.addEventListener("pointerdown", prepareOcNavigation);
 			link.addEventListener("touchstart", prepareOcNavigation);
-			link.addEventListener("click", prepareOcNavigation);
+			link.addEventListener("touchend", collapseAfterNavigationTap);
+			link.addEventListener("click", () => {
+				prepareOcNavigation();
+				collapseAfterNavigationTap();
+			});
 		});
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
