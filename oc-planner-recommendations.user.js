@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.16
+// @version      0.2.17
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -811,7 +811,7 @@
 			recommendation,
 			startedAt: Date.now(),
 		};
-		[250, 700, 1200, 2000, 3500, 5500, 8000].forEach((delay) => {
+		[150, 400, 800, 1300, 2000, 3000, 4500, 6500, 9000, 12000, 16000].forEach((delay) => {
 			window.setTimeout(() => retryPendingHighlight(), delay);
 		});
 	};
@@ -819,8 +819,8 @@
 	const retryPendingHighlight = () => {
 		const pending = state.pendingHighlight;
 		if (!pending) return;
-		const foundRole = highlightRecommendation(pending.recommendation);
-		if (foundRole || Date.now() - pending.startedAt > 9000) {
+		highlightRecommendation(pending.recommendation);
+		if (Date.now() - pending.startedAt > 17000) {
 			state.pendingHighlight = null;
 		}
 	};
@@ -1012,6 +1012,11 @@
 			if (Date.now() - lastTouchAt < 500) return;
 			handler(event);
 		});
+	};
+
+	const collapsePanelWithoutRender = () => {
+		state.collapsed = true;
+		document.getElementById(PANEL_ID)?.classList.add("collapsed");
 	};
 
 	const refreshRecommendations = async (force) => {
@@ -1243,16 +1248,19 @@
 			state.disclosureOpen = !!event.currentTarget.open;
 		});
 		panel.querySelectorAll(".ocp-card-link").forEach((link) => {
-			link.addEventListener("click", () => {
-				const recommendation = {
-					crimeId: link.dataset.ocpCrimeId,
-					role: link.dataset.ocpRole,
-					position: link.dataset.ocpPosition,
-					roleImpactLabel: link.dataset.ocpRoleImpact,
-				};
-				setCollapsed(true);
+			const recommendation = {
+				crimeId: link.dataset.ocpCrimeId,
+				role: link.dataset.ocpRole,
+				position: link.dataset.ocpPosition,
+				roleImpactLabel: link.dataset.ocpRoleImpact,
+			};
+			const prepareOcNavigation = () => {
+				collapsePanelWithoutRender();
 				queueHighlightRecommendation(recommendation);
-			});
+			};
+			link.addEventListener("pointerdown", prepareOcNavigation);
+			link.addEventListener("touchstart", prepareOcNavigation);
+			link.addEventListener("click", prepareOcNavigation);
 		});
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
