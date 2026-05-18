@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.15
+// @version      0.2.16
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -639,7 +639,6 @@
 			url.hostname.replace(/^www\./, "") === "torn.com" &&
 			url.pathname === "/factions.php" &&
 			(url.searchParams.get("step") === "your" || fullUrl.includes("step=your")) &&
-			(url.searchParams.get("type") === "1" || fullUrl.includes("type=1")) &&
 			(hash.includes("tab=crimes") || fullUrl.includes("tab=crimes"))
 		);
 	};
