@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.6
+// @version      0.2.7
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -101,6 +101,7 @@
 			bottom: 14px;
 			z-index: 999999;
 			width: min(380px, calc(100vw - 28px));
+			max-height: calc(100vh - 28px);
 			font: 13px/1.45 Arial, Helvetica, sans-serif;
 			color: #e7ecf3;
 			background: #111820;
@@ -167,6 +168,9 @@
 		}
 		#${PANEL_ID} .ocp-body {
 			padding: 10px;
+			max-height: calc(100vh - 74px);
+			overflow-y: auto;
+			overscroll-behavior: contain;
 		}
 		#${PANEL_ID} .ocp-row {
 			display: flex;
@@ -295,12 +299,46 @@
 				right: 8px;
 				bottom: 8px;
 				width: calc(100vw - 16px);
+				max-height: min(70vh, calc(100vh - 16px));
+				font-size: 12px;
+			}
+			#${PANEL_ID}.collapsed {
+				width: min(210px, calc(100vw - 16px));
+			}
+			#${PANEL_ID} .ocp-header {
+				padding: 7px 8px;
+			}
+			#${PANEL_ID} .ocp-body {
+				padding: 8px;
+				max-height: calc(min(70vh, 100vh - 16px) - 41px);
+			}
+			#${PANEL_ID} .ocp-row {
+				gap: 5px;
+				margin-top: 6px;
+			}
+			#${PANEL_ID} .ocp-button {
+				padding: 6px 7px;
+			}
+			#${PANEL_ID} .ocp-input {
+				padding: 7px;
+			}
+			#${PANEL_ID} .ocp-card {
+				margin-top: 7px;
+				padding: 7px;
 			}
 			#${PANEL_ID} .ocp-grid {
 				grid-template-columns: 1fr;
+				gap: 2px;
 			}
 			#${PANEL_ID} .ocp-value {
 				text-align: left;
+			}
+			#${PANEL_ID} .ocp-disclosure summary {
+				padding: 6px;
+			}
+			#${PANEL_ID} .ocp-disclosure th,
+			#${PANEL_ID} .ocp-disclosure td {
+				padding: 5px;
 			}
 		}
 	`);
@@ -986,6 +1024,8 @@
 					position: link.dataset.ocpPosition,
 					roleImpactLabel: link.dataset.ocpRoleImpact,
 				};
+				state.collapsed = true;
+				render();
 				queueHighlightRecommendation(recommendation);
 			});
 		});
