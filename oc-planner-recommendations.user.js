@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.3
+// @version      0.2.4
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @match        https://www.torn.com/factions.php*
@@ -184,6 +184,10 @@
 		.askeladds-oc-planner-highlight {
 			outline: 3px solid #82d173 !important;
 			box-shadow: 0 0 0 3px rgba(130, 209, 115, 0.28), 0 0 18px rgba(130, 209, 115, 0.55) !important;
+		}
+		.askeladds-oc-planner-role-highlight {
+			outline: 3px solid #ffd166 !important;
+			box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.26), 0 0 18px rgba(255, 209, 102, 0.5) !important;
 		}
 		#${PANEL_ID} .ocp-card.need-more {
 			border-color: #aa8f53;
@@ -466,26 +470,117 @@
 		return `https://www.torn.com/factions.php?step=your&type=1#/tab=crimes&crimeId=${id}`;
 	};
 
-	const highlightRecommendedCrime = (crimeId) => {
+	const normalizeText = (value) =>
+		String(value || "")
+			.toLowerCase()
+			.replace(/\s+/g, " ")
+			.trim();
+
+	const getElementCrimeId = (element) => {
+		const directId =
+			element.getAttribute("data-crime-id") ||
+			element.getAttribute("data-crimeid") ||
+			element.getAttribute("data-oc-id") ||
+			"";
+		if (directId) return directId;
+
+		const href = element.getAttribute("href");
+		if (href) {
+			try {
+				const parsed = new URL(href, window.location.origin);
+				const hashParams = new URLSearchParams(parsed.hash.replace(/^#\/?/, ""));
+				const hrefId =
+					parsed.searchParams.get("crimeId") ||
+					parsed.searchParams.get("crimeID") ||
+					hashParams.get("crimeId") ||
+					hashParams.get("crimeID") ||
+					"";
+				if (hrefId) return hrefId;
+			} catch {
+				const match = href.match(/[?&#]crimeI?d=(\d+)/i);
+				if (match?.[1]) return match[1];
+			}
+		}
+
+		const dataId = element.getAttribute("data-id") || "";
+		const elementContext = normalizeText(`${element.id || ""} ${element.className || ""} ${element.textContent || ""}`);
+		return dataId && /\b(oc|crime|organized)\b/.test(elementContext) ? dataId : "";
+	};
+
+	const getCrimeContainer = (element) =>
+		element?.closest(
+			"li, tr, [data-crime-id], [data-crimeid], [class*='crime'], [class*='Crime'], [class*='card'], [class*='row']"
+		) || element;
+
+	const findCrimeElement = (crimeId) => {
 		const id = String(crimeId || "");
+		if (!id) return null;
+
+		const candidates = Array.from(
+			document.querySelectorAll("a[href], button, [data-crime-id], [data-crimeid], [data-oc-id], [data-id]")
+		);
+		const match = candidates.find((element) => getElementCrimeId(element) === id);
+		if (match) return getCrimeContainer(match);
+
+		return candidates
+			.map(getCrimeContainer)
+			.find((element) => normalizeText(element?.textContent).includes(`oc #${id}`)) || null;
+	};
+
+	const findRoleElement = (crimeElement, recommendation) => {
+		if (!crimeElement || !recommendation) return null;
+		const roleTerms = [
+			recommendation.position,
+			recommendation.role,
+			recommendation.roleImpactLabel,
+		]
+			.map(normalizeText)
+			.filter(Boolean);
+		if (!roleTerms.length) return null;
+
+		const candidates = Array.from(
+			crimeElement.querySelectorAll(
+				"li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role'], [class*='member'], [class*='Member'], button, a"
+			)
+		);
+
+		const match = candidates
+			.filter((element) => element !== crimeElement)
+			.sort((a, b) => normalizeText(a.textContent).length - normalizeText(b.textContent).length)
+			.find((element) => {
+				const text = normalizeText(element.textContent);
+				return text && roleTerms.some((term) => text.includes(term));
+			});
+
+		return match?.closest("li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") || match || null;
+	};
+
+	const highlightRecommendation = (recommendationOrCrimeId) => {
+		const recommendation =
+			typeof recommendationOrCrimeId === "object" && recommendationOrCrimeId
+				? recommendationOrCrimeId
+				: { crimeId: recommendationOrCrimeId };
+		const id = String(recommendation.crimeId || "");
 		if (!id) return;
 		document
-			.querySelectorAll(".askeladds-oc-planner-highlight")
+			.querySelectorAll(".askeladds-oc-planner-highlight, .askeladds-oc-planner-role-highlight")
 			.forEach((element) => element.classList.remove("askeladds-oc-planner-highlight"));
+		document
+			.querySelectorAll(".askeladds-oc-planner-role-highlight")
+			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
 
-		const candidates = Array.from(document.querySelectorAll("a[href], button, [data-crime-id], [data-crimeid], [data-id]"));
-		const match = candidates.find((element) => {
-			const href = element.getAttribute("href") || "";
-			const dataCrimeId =
-				element.getAttribute("data-crime-id") ||
-				element.getAttribute("data-crimeid") ||
-				element.getAttribute("data-id") ||
-				"";
-			return href.includes(`crimeId=${id}`) || href.includes(`crimeID=${id}`) || dataCrimeId === id;
+		const crimeElement = findCrimeElement(id);
+		crimeElement?.classList.add("askeladds-oc-planner-highlight");
+
+		const roleElement = findRoleElement(crimeElement, recommendation);
+		roleElement?.classList.add("askeladds-oc-planner-role-highlight");
+		(roleElement || crimeElement)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+	};
+
+	const queueHighlightRecommendation = (recommendation) => {
+		[400, 1200, 2500].forEach((delay) => {
+			window.setTimeout(() => highlightRecommendation(recommendation), delay);
 		});
-		const target = match?.closest("li, tr, [class*='crime'], [class*='Crime'], [class*='card'], [class*='row']") || match;
-		target?.classList.add("askeladds-oc-planner-highlight");
-		target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
 	};
 
 	const findSlotRecommendations = (planner, memberId) => {
@@ -621,8 +716,7 @@
 			state.progress = "";
 			state.error = "";
 			scheduleAutoRefresh();
-			const firstCrimeId = state.lastPayload?.recommendations?.[0]?.crimeId;
-			window.setTimeout(() => highlightRecommendedCrime(firstCrimeId), 400);
+			queueHighlightRecommendation(state.lastPayload?.recommendations?.[0]);
 		} catch (error) {
 			state.error = error?.message || "Could not load OC recommendation.";
 			state.progress = "";
@@ -666,7 +760,7 @@
 					${recommendation.difficulty ? `<div class="ocp-label">Tier</div><div class="ocp-value">T${escapeHtml(recommendation.difficulty)}</div>` : ""}
 					${recommendation.currentCrimeName ? `<div class="ocp-label">When you're done with</div><div class="ocp-value">${escapeHtml(recommendation.currentCrimeName)}</div>` : ""}
 				</div>
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}">Open OC #${escapeHtml(recommendation.crimeId)}</a>
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Open OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
 	};
@@ -779,8 +873,13 @@
 		});
 		panel.querySelectorAll(".ocp-card-link").forEach((link) => {
 			link.addEventListener("click", () => {
-				window.setTimeout(() => highlightRecommendedCrime(link.dataset.ocpCrimeId), 400);
-				window.setTimeout(() => highlightRecommendedCrime(link.dataset.ocpCrimeId), 1200);
+				const recommendation = {
+					crimeId: link.dataset.ocpCrimeId,
+					role: link.dataset.ocpRole,
+					position: link.dataset.ocpPosition,
+					roleImpactLabel: link.dataset.ocpRoleImpact,
+				};
+				queueHighlightRecommendation(recommendation);
 			});
 		});
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
