@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.4
+// @version      0.2.5
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -37,6 +37,47 @@
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
+	const isTornPda =
+		typeof window.PDA_httpGet === "function" ||
+		typeof window.PDA_httpPost === "function";
+
+	const storage = {
+		get(key, fallback = "") {
+			if (typeof GM_getValue === "function") return GM_getValue(key, fallback);
+			const value = window.localStorage?.getItem(key);
+			return value === null || value === undefined ? fallback : value;
+		},
+		set(key, value) {
+			if (typeof GM_setValue === "function") {
+				GM_setValue(key, value);
+				return;
+			}
+			window.localStorage?.setItem(key, String(value));
+		},
+		delete(key) {
+			if (typeof GM_deleteValue === "function") {
+				GM_deleteValue(key);
+				return;
+			}
+			window.localStorage?.removeItem(key);
+		},
+	};
+
+	const addStyle = (css) => {
+		if (typeof GM_addStyle === "function") {
+			GM_addStyle(css);
+			return;
+		}
+		const style = document.createElement("style");
+		style.textContent = css;
+		(document.head || document.documentElement).appendChild(style);
+	};
+
+	const registerMenuCommand = (name, callback) => {
+		if (typeof GM_registerMenuCommand === "function") {
+			GM_registerMenuCommand(name, callback);
+		}
+	};
 
 	const state = {
 		profile: null,
@@ -53,7 +94,7 @@
 
 	let lastRenderedMarkup = "";
 
-	GM_addStyle(`
+	addStyle(`
 		#${PANEL_ID} {
 			position: fixed;
 			right: 14px;
@@ -264,10 +305,10 @@
 		}
 	`);
 
-	GM_registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
-	GM_registerMenuCommand("OC Planner: forget API key", () => {
-		GM_deleteValue(STORAGE_KEY);
-		GM_deleteValue(PROFILE_STORAGE_KEY);
+	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
+	registerMenuCommand("OC Planner: forget API key", () => {
+		storage.delete(STORAGE_KEY);
+		storage.delete(PROFILE_STORAGE_KEY);
 		state.profile = null;
 		state.lastPlanner = null;
 		state.lastPayload = null;
@@ -297,15 +338,73 @@
 		return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 	};
 
+	const normalizeHttpResponse = (response) => {
+		if (typeof response === "string") {
+			return {
+				status: 200,
+				responseHeaders: "content-type: application/json",
+				responseText: response,
+			};
+		}
+		if (response && typeof response === "object" && !("responseText" in response) && !("status" in response)) {
+			return {
+				status: 200,
+				responseHeaders: "content-type: application/json",
+				responseText: JSON.stringify(response),
+			};
+		}
+		return response || {};
+	};
+
+	const sendHttpRequest = (options) => {
+		const method = (options.method || "GET").toUpperCase();
+		if (typeof GM_xmlhttpRequest === "function") {
+			return GM_xmlhttpRequest(options);
+		}
+		if (isTornPda && method === "GET" && typeof window.PDA_httpGet === "function") {
+			window.PDA_httpGet(options.url)
+				.then((response) => options.onload?.(normalizeHttpResponse(response)))
+				.catch((error) => options.onerror?.(error));
+			return undefined;
+		}
+		if (isTornPda && method === "POST" && typeof window.PDA_httpPost === "function") {
+			window.PDA_httpPost(options.url, options.headers || {}, options.data || "")
+				.then((response) => options.onload?.(normalizeHttpResponse(response)))
+				.catch((error) => options.onerror?.(error));
+			return undefined;
+		}
+		window.fetch(options.url, {
+			method,
+			headers: options.headers || {},
+			body: options.data,
+			credentials: "omit",
+		})
+			.then(async (response) => {
+				options.onload?.({
+					status: response.status,
+					responseHeaders: `content-type: ${response.headers.get("content-type") || ""}`,
+					responseText: await response.text(),
+				});
+			})
+			.catch((error) => options.onerror?.(error));
+		return undefined;
+	};
+
 	const requestJson = (options) =>
 		new Promise((resolve, reject) => {
-			GM_xmlhttpRequest({
+			const timeoutId = window.setTimeout(
+				() => reject(new Error(`${options.label || "Request"} timed out.`)),
+				options.timeout || REQUEST_TIMEOUT_MS
+			);
+			sendHttpRequest({
 				method: options.method || "GET",
 				url: options.url,
 				headers: options.headers || {},
 				data: options.data,
 				timeout: options.timeout || REQUEST_TIMEOUT_MS,
 				onload: (response) => {
+					window.clearTimeout(timeoutId);
+					response = normalizeHttpResponse(response);
 					const status = Number(response.status || 0);
 					const contentType = String(response.responseHeaders || "")
 						.split(/\r?\n/)
@@ -333,8 +432,14 @@
 						reject(new Error(`${options.label || "Request"} returned invalid JSON.`));
 					}
 				},
-				onerror: () => reject(new Error(`${options.label || "Request"} failed. Check the URL and network access.`)),
-				ontimeout: () => reject(new Error(`${options.label || "Request"} timed out.`)),
+				onerror: () => {
+					window.clearTimeout(timeoutId);
+					reject(new Error(`${options.label || "Request"} failed. Check the URL and network access.`));
+				},
+				ontimeout: () => {
+					window.clearTimeout(timeoutId);
+					reject(new Error(`${options.label || "Request"} timed out.`));
+				},
 			});
 		});
 
@@ -367,11 +472,11 @@
 		return payload.planner;
 	};
 
-	const getStoredKey = () => String(GM_getValue(STORAGE_KEY, "") || "").trim();
+	const getStoredKey = () => String(storage.get(STORAGE_KEY, "") || "").trim();
 
 	const saveStoredKey = (key) => {
 		const trimmed = String(key || "").trim();
-		if (trimmed) GM_setValue(STORAGE_KEY, trimmed);
+		if (trimmed) storage.set(STORAGE_KEY, trimmed);
 	};
 
 	const getKeyCacheId = (key) => {
@@ -384,7 +489,7 @@
 		const keyCacheId = getKeyCacheId(key);
 		if (!keyCacheId) return null;
 		try {
-			const cached = JSON.parse(String(GM_getValue(PROFILE_STORAGE_KEY, "") || ""));
+			const cached = JSON.parse(String(storage.get(PROFILE_STORAGE_KEY, "") || ""));
 			if (cached?.keyCacheId !== keyCacheId || !cached?.profile?.player_id) return null;
 			return cached.profile;
 		} catch {
@@ -394,7 +499,7 @@
 
 	const saveCachedProfile = (key, profile) => {
 		if (!profile?.player_id) return;
-		GM_setValue(
+		storage.set(
 			PROFILE_STORAGE_KEY,
 			JSON.stringify({
 				keyCacheId: getKeyCacheId(key),
@@ -405,7 +510,7 @@
 	};
 
 	const clearCachedProfile = () => {
-		GM_deleteValue(PROFILE_STORAGE_KEY);
+		storage.delete(PROFILE_STORAGE_KEY);
 		state.profile = null;
 	};
 
@@ -887,8 +992,8 @@
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
-			GM_deleteValue(STORAGE_KEY);
-			GM_deleteValue(PROFILE_STORAGE_KEY);
+			storage.delete(STORAGE_KEY);
+			storage.delete(PROFILE_STORAGE_KEY);
 			state.profile = null;
 			state.lastPlanner = null;
 			state.lastPayload = null;
