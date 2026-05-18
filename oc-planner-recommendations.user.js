@@ -4,6 +4,8 @@
 // @version      0.2.4
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
+// @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
+// @updateURL    https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.meta.js
 // @match        https://www.torn.com/factions.php*
 // @match        https://torn.com/factions.php*
 // @run-at       document-idle
