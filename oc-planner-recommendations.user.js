@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.13
+// @version      0.2.14
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -1071,6 +1071,10 @@
 			recommendation.plannedStartAt && recommendation.plannedStartAt > Math.floor(Date.now() / 1000)
 				? `${formatRelative(recommendation.plannedStartAt)} (${formatTimestamp(recommendation.plannedStartAt)})`
 				: "now";
+		const plannedFinishAt = recommendation.plannedOcCompleteAt || recommendation.plannedMemberEndAt;
+		const finishLabel = plannedFinishAt
+			? `${formatRelative(plannedFinishAt)} (${formatTimestamp(plannedFinishAt)})`
+			: "";
 		const successChance = formatChance(recommendation.successChance);
 		const step = recommendation.planningStep;
 		const expectedTeam = (recommendation.expectedTeam || [])
@@ -1091,7 +1095,7 @@
 					<span>${escapeHtml(recommendation.crimeName || "Organized crime")}</span>
 					<span class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
 				</div>
-				${statRow(statItem("Start", startLabel))}
+				${statRow(statItem("Start", startLabel), statItem("Finish", finishLabel))}
 				${statRow(
 					statItem("CPR", `${Math.round(Number(recommendation.cpr || 0))}%`),
 					statItem("Success", successChance),
