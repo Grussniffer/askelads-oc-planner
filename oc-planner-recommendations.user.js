@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.7
+// @version      0.2.8
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -100,9 +100,9 @@
 			right: 14px;
 			bottom: 14px;
 			z-index: 999999;
-			width: min(380px, calc(100vw - 28px));
+			width: min(340px, calc(100vw - 28px));
 			max-height: calc(100vh - 28px);
-			font: 13px/1.45 Arial, Helvetica, sans-serif;
+			font: 12px/1.35 Arial, Helvetica, sans-serif;
 			color: #e7ecf3;
 			background: #111820;
 			border: 1px solid #2d3b4b;
@@ -122,13 +122,14 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			gap: 8px;
-			padding: 9px 10px;
+			gap: 6px;
+			padding: 7px 8px;
 			background: #1a2530;
 			border-bottom: 1px solid #2d3b4b;
 		}
 		#${PANEL_ID} .ocp-title {
 			font-weight: 700;
+			font-size: 13px;
 			letter-spacing: 0;
 		}
 		#${PANEL_ID} .ocp-actions {
@@ -144,15 +145,15 @@
 			cursor: pointer;
 		}
 		#${PANEL_ID} .ocp-icon-button {
-			width: 26px;
-			height: 26px;
+			width: 24px;
+			height: 24px;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			padding: 0;
 		}
 		#${PANEL_ID} .ocp-button {
-			padding: 7px 9px;
+			padding: 5px 7px;
 		}
 		#${PANEL_ID} .ocp-icon-button:hover,
 		#${PANEL_ID} .ocp-button:hover {
@@ -167,15 +168,15 @@
 			background: #51252b;
 		}
 		#${PANEL_ID} .ocp-body {
-			padding: 10px;
-			max-height: calc(100vh - 74px);
+			padding: 8px;
+			max-height: calc(100vh - 64px);
 			overflow-y: auto;
 			overscroll-behavior: contain;
 		}
 		#${PANEL_ID} .ocp-row {
 			display: flex;
-			gap: 7px;
-			margin-top: 8px;
+			gap: 5px;
+			margin-top: 6px;
 		}
 		#${PANEL_ID} .ocp-row input {
 			min-width: 0;
@@ -186,25 +187,25 @@
 			border: 1px solid #354454;
 			background: #0d131a;
 			color: #e7ecf3;
-			padding: 8px;
+			padding: 6px;
 		}
 		#${PANEL_ID} .ocp-muted {
 			color: #a8b3c0;
 		}
 		#${PANEL_ID} .ocp-error {
-			margin-top: 8px;
+			margin-top: 6px;
 			color: #ffd5d5;
 			background: #3b171c;
 			border: 1px solid #75303a;
-			padding: 8px;
+			padding: 6px;
 		}
 		#${PANEL_ID} .ocp-status {
-			margin-top: 8px;
+			margin-top: 6px;
 			color: #b9d8ff;
 		}
 		#${PANEL_ID} .ocp-card {
-			margin-top: 9px;
-			padding: 9px;
+			margin-top: 7px;
+			padding: 7px;
 			border: 1px solid #344353;
 			background: #151e28;
 		}
@@ -216,12 +217,12 @@
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
-			margin-top: 8px;
+			margin-top: 6px;
 			width: 100%;
 			border: 1px solid #82b77b;
 			background: #264d2e;
 			color: #f2fff1;
-			padding: 7px 8px;
+			padding: 6px 7px;
 			text-decoration: none;
 			font-weight: 700;
 		}
@@ -242,14 +243,14 @@
 		}
 		#${PANEL_ID} .ocp-card-title {
 			font-weight: 700;
-			font-size: 14px;
-			margin-bottom: 4px;
+			font-size: 13px;
+			margin-bottom: 3px;
 		}
 		#${PANEL_ID} .ocp-grid {
 			display: grid;
 			grid-template-columns: 1fr 1fr;
-			gap: 4px 10px;
-			margin-top: 7px;
+			gap: 2px 8px;
+			margin-top: 5px;
 		}
 		#${PANEL_ID} .ocp-label {
 			color: #a8b3c0;
@@ -259,9 +260,38 @@
 			overflow-wrap: anywhere;
 		}
 		#${PANEL_ID} .ocp-footer {
-			margin-top: 8px;
+			margin-top: 6px;
 			font-size: 12px;
 			color: #9ba8b7;
+		}
+		#${PANEL_ID} .ocp-team {
+			margin-top: 6px;
+			border-top: 1px solid #2f3d4d;
+			padding-top: 5px;
+		}
+		#${PANEL_ID} .ocp-team-title {
+			color: #a8b3c0;
+			font-weight: 700;
+			margin-bottom: 3px;
+		}
+		#${PANEL_ID} .ocp-team-row {
+			display: grid;
+			grid-template-columns: minmax(70px, 0.8fr) minmax(0, 1.2fr);
+			gap: 6px;
+			padding: 1px 0;
+		}
+		#${PANEL_ID} .ocp-team-slot {
+			color: #a8b3c0;
+			overflow-wrap: anywhere;
+		}
+		#${PANEL_ID} .ocp-team-member {
+			color: #e7ecf3;
+			overflow-wrap: anywhere;
+			text-align: right;
+		}
+		#${PANEL_ID} .ocp-team-row.you .ocp-team-member {
+			color: #b7f5b1;
+			font-weight: 700;
 		}
 		#${PANEL_ID} .ocp-disclosure {
 			margin-top: 8px;
@@ -299,8 +329,8 @@
 				right: 8px;
 				bottom: 8px;
 				width: calc(100vw - 16px);
-				max-height: min(70vh, calc(100vh - 16px));
-				font-size: 12px;
+				max-height: min(60vh, calc(100vh - 16px));
+				font-size: 11px;
 			}
 			#${PANEL_ID}.collapsed {
 				width: min(210px, calc(100vw - 16px));
@@ -310,7 +340,7 @@
 			}
 			#${PANEL_ID} .ocp-body {
 				padding: 8px;
-				max-height: calc(min(70vh, 100vh - 16px) - 41px);
+				max-height: calc(min(60vh, 100vh - 16px) - 39px);
 			}
 			#${PANEL_ID} .ocp-row {
 				gap: 5px;
@@ -339,6 +369,9 @@
 			#${PANEL_ID} .ocp-disclosure th,
 			#${PANEL_ID} .ocp-disclosure td {
 				padding: 5px;
+			}
+			#${PANEL_ID} .ocp-team-row {
+				grid-template-columns: minmax(58px, 0.75fr) minmax(0, 1.25fr);
 			}
 		}
 	`);
@@ -700,6 +733,15 @@
 		return match?.closest("li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") || match || null;
 	};
 
+	const clearRecommendationHighlights = () => {
+		document
+			.querySelectorAll(".askeladds-oc-planner-highlight")
+			.forEach((element) => element.classList.remove("askeladds-oc-planner-highlight"));
+		document
+			.querySelectorAll(".askeladds-oc-planner-role-highlight")
+			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
+	};
+
 	const highlightRecommendation = (recommendationOrCrimeId) => {
 		const recommendation =
 			typeof recommendationOrCrimeId === "object" && recommendationOrCrimeId
@@ -707,12 +749,7 @@
 				: { crimeId: recommendationOrCrimeId };
 		const id = String(recommendation.crimeId || "");
 		if (!id) return;
-		document
-			.querySelectorAll(".askeladds-oc-planner-highlight, .askeladds-oc-planner-role-highlight")
-			.forEach((element) => element.classList.remove("askeladds-oc-planner-highlight"));
-		document
-			.querySelectorAll(".askeladds-oc-planner-role-highlight")
-			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
+		clearRecommendationHighlights();
 
 		const crimeElement = findCrimeElement(id);
 		crimeElement?.classList.add("askeladds-oc-planner-highlight");
@@ -727,6 +764,77 @@
 			window.setTimeout(() => highlightRecommendation(recommendation), delay);
 		});
 	};
+
+	const getMemberId = (member) =>
+		Number(
+			member?.memberId ||
+				member?.playerId ||
+				member?.player_id ||
+				member?.id ||
+				0
+		);
+
+	const getMemberName = (member) => {
+		if (!member) return "";
+		if (typeof member === "string") return member;
+		const id = getMemberId(member);
+		return (
+			member.memberName ||
+			member.playerName ||
+			member.player_name ||
+			member.name ||
+			member.username ||
+			(id ? `Player ${id}` : "")
+		);
+	};
+
+	const getSlotMember = (slot) => {
+		const member =
+			slot.expectedMember ||
+			slot.plannedMember ||
+			slot.assignedMember ||
+			slot.currentMember ||
+			slot.member ||
+			slot.user ||
+			slot.participant ||
+			slot.recommended ||
+			slot.soonRecommended;
+		const name =
+			getMemberName(member) ||
+			slot.expectedMemberName ||
+			slot.plannedMemberName ||
+			slot.assignedMemberName ||
+			slot.currentMemberName ||
+			slot.memberName ||
+			slot.playerName ||
+			slot.name;
+		const id =
+			getMemberId(member) ||
+			Number(
+				slot.expectedMemberId ||
+					slot.plannedMemberId ||
+					slot.assignedMemberId ||
+					slot.currentMemberId ||
+					slot.memberId ||
+					slot.playerId ||
+					0
+			);
+		return {
+			id,
+			name: name || (id ? `Player ${id}` : "Open"),
+		};
+	};
+
+	const getExpectedTeam = (crime, memberId) =>
+		(crime?.slots || []).map((slot, index) => {
+			const member = getSlotMember(slot);
+			return {
+				slot: slot.position || slot.role || slot.roleImpactLabel || `Slot ${index + 1}`,
+				memberId: member.id,
+				memberName: member.name,
+				isYou: Number(member.id) === Number(memberId),
+			};
+		});
 
 	const findSlotRecommendations = (planner, memberId) => {
 		const recommendations = [];
@@ -764,6 +872,7 @@
 					plannedOcCompleteAt: slot.plannedOcCompleteAt,
 					successChance: crime.recommendedSuccessChance,
 					successBand: crime.successBand,
+					expectedTeam: getExpectedTeam(crime, memberId),
 					warnings: crime.warnings || [],
 				});
 			}
@@ -861,7 +970,7 @@
 			state.progress = "";
 			state.error = "";
 			scheduleAutoRefresh();
-			queueHighlightRecommendation(state.lastPayload?.recommendations?.[0]);
+			clearRecommendationHighlights();
 		} catch (error) {
 			state.error = error?.message || "Could not load OC recommendation.";
 			state.progress = "";
@@ -889,6 +998,16 @@
 				: "now";
 		const successChance = formatChance(recommendation.successChance);
 		const step = recommendation.planningStep;
+		const expectedTeam = (recommendation.expectedTeam || [])
+			.map(
+				(member) => `
+					<div class="ocp-team-row ${member.isYou ? "you" : ""}">
+						<div class="ocp-team-slot">${escapeHtml(member.slot)}</div>
+						<div class="ocp-team-member">${escapeHtml(member.memberName)}</div>
+					</div>
+				`
+			)
+			.join("");
 
 		return `
 			<div class="ocp-card ${isNext ? "next" : ""}">
@@ -905,7 +1024,8 @@
 					${recommendation.difficulty ? `<div class="ocp-label">Tier</div><div class="ocp-value">T${escapeHtml(recommendation.difficulty)}</div>` : ""}
 					${recommendation.currentCrimeName ? `<div class="ocp-label">When you're done with</div><div class="ocp-value">${escapeHtml(recommendation.currentCrimeName)}</div>` : ""}
 				</div>
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Open OC #${escapeHtml(recommendation.crimeId)}</a>
+				${expectedTeam ? `<div class="ocp-team"><div class="ocp-team-title">Expected team</div>${expectedTeam}</div>` : ""}
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Go to OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
 	};
