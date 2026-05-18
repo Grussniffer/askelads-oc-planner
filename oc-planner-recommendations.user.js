@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.8
+// @version      0.2.9
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -126,6 +126,9 @@
 			padding: 7px 8px;
 			background: #1a2530;
 			border-bottom: 1px solid #2d3b4b;
+			cursor: pointer;
+			user-select: none;
+			touch-action: manipulation;
 		}
 		#${PANEL_ID} .ocp-title {
 			font-weight: 700;
@@ -336,7 +339,13 @@
 				width: min(210px, calc(100vw - 16px));
 			}
 			#${PANEL_ID} .ocp-header {
-				padding: 7px 8px;
+				min-height: 44px;
+				padding: 8px 10px;
+			}
+			#${PANEL_ID} .ocp-icon-button {
+				width: 34px;
+				height: 34px;
+				font-size: 18px;
 			}
 			#${PANEL_ID} .ocp-body {
 				padding: 8px;
@@ -1129,9 +1138,14 @@
 		lastRenderedMarkup = markup;
 		panel.classList.toggle("collapsed", state.collapsed);
 
-		panel.querySelector(".ocp-collapse")?.addEventListener("click", () => {
+		const toggleCollapsed = () => {
 			state.collapsed = !state.collapsed;
 			render();
+		};
+		panel.querySelector(".ocp-header")?.addEventListener("click", toggleCollapsed);
+		panel.querySelector(".ocp-collapse")?.addEventListener("click", (event) => {
+			event.stopPropagation();
+			toggleCollapsed();
 		});
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
