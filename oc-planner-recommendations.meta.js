@@ -1,0 +1,18 @@
+// ==UserScript==
+// @name         AskeLadds OC Planner Recommendations
+// @namespace    https://askeladds.local/oc-planner
+// @version      0.2.3
+// @description  Shows your OC Planner recommendation on Torn's faction OC page.
+// @author       AskeLadds
+// @match        https://www.torn.com/factions.php*
+// @match        https://torn.com/factions.php*
+// @run-at       document-idle
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// @noframes
+// ==/UserScript==
