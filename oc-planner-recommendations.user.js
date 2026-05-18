@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.11
+// @version      0.2.12
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -249,6 +249,15 @@
 			font-size: 13px;
 			margin-bottom: 3px;
 		}
+		#${PANEL_ID} .ocp-card-heading {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: baseline;
+			gap: 2px 6px;
+		}
+		#${PANEL_ID} .ocp-card-heading .ocp-muted {
+			overflow-wrap: anywhere;
+		}
 		#${PANEL_ID} .ocp-grid {
 			display: grid;
 			grid-template-columns: 1fr 1fr;
@@ -323,25 +332,6 @@
 			overflow-wrap: anywhere;
 		}
 		#${PANEL_ID} .ocp-team-chip.you .ocp-chip-member {
-			color: #b7f5b1;
-			font-weight: 700;
-		}
-		#${PANEL_ID} .ocp-team-row {
-			display: grid;
-			grid-template-columns: minmax(70px, 0.8fr) minmax(0, 1.2fr);
-			gap: 6px;
-			padding: 1px 0;
-		}
-		#${PANEL_ID} .ocp-team-slot {
-			color: #a8b3c0;
-			overflow-wrap: anywhere;
-		}
-		#${PANEL_ID} .ocp-team-member {
-			color: #e7ecf3;
-			overflow-wrap: anywhere;
-			text-align: right;
-		}
-		#${PANEL_ID} .ocp-team-row.you .ocp-team-member {
 			color: #b7f5b1;
 			font-weight: 700;
 		}
@@ -427,9 +417,6 @@
 			#${PANEL_ID} .ocp-disclosure th,
 			#${PANEL_ID} .ocp-disclosure td {
 				padding: 5px;
-			}
-			#${PANEL_ID} .ocp-team-row {
-				grid-template-columns: minmax(58px, 0.75fr) minmax(0, 1.25fr);
 			}
 		}
 	`);
@@ -1099,9 +1086,11 @@
 
 		return `
 			<div class="ocp-card ${isNext ? "next" : ""}">
-				<div class="ocp-card-title">${escapeHtml(isNext ? "Join Next" : "Queued Recommendation")}</div>
-				<div>${escapeHtml(recommendation.crimeName || "Organized crime")}</div>
-				<div class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</div>
+				<div class="ocp-card-heading">
+					<span class="ocp-card-title">${escapeHtml(isNext ? "Join Next" : "Queued")}</span>
+					<span>${escapeHtml(recommendation.crimeName || "Organized crime")}</span>
+					<span class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+				</div>
 				${statRow(statItem("Start", startLabel))}
 				${statRow(
 					statItem("CPR", `${Math.round(Number(recommendation.cpr || 0))}%`),
@@ -1176,6 +1165,20 @@
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
 		const collapsed = state.collapsed;
+		const keyControls = savedKey
+			? `
+				<div class="ocp-row">
+					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
+					<button class="ocp-button danger ocp-forget">Change key</button>
+				</div>
+			`
+			: `
+				<div class="ocp-muted">Torn API key</div>
+				<div class="ocp-row">
+					<input class="ocp-input ocp-api-key" type="password" value="" placeholder="Paste Torn API key">
+					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
+				</div>
+			`;
 
 		const markup = `
 			<div class="ocp-header">
@@ -1186,15 +1189,7 @@
 			</div>
 			<div class="ocp-body">
 				${backendConfigured ? "" : `<div class="ocp-error">Set BACKEND_BASE_URL in the userscript before using it.</div>`}
-				<div class="ocp-muted">Torn API key</div>
-				<div class="ocp-row">
-					<input class="ocp-input ocp-api-key" type="password" value="${escapeHtml(savedKey)}" placeholder="Paste Torn API key">
-					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
-				</div>
-				<div class="ocp-row">
-					<button class="ocp-button ocp-refresh">Refresh cached plan</button>
-					<button class="ocp-button danger ocp-forget">Forget key</button>
-				</div>
+				${keyControls}
 				${state.progress ? `<div class="ocp-status">${escapeHtml(state.progress)}</div>` : ""}
 				${state.error ? `<div class="ocp-error">${escapeHtml(state.error)}</div>` : ""}
 				${renderResults()}
@@ -1241,14 +1236,13 @@
 			});
 		});
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
-		panel.querySelector(".ocp-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
 			storage.remove(STORAGE_KEY);
 			storage.remove(PROFILE_STORAGE_KEY);
 			state.profile = null;
 			state.lastPlanner = null;
 			state.lastPayload = null;
-			state.error = "";
+			state.error = "Paste a new Torn API key.";
 			state.progress = "";
 			state.disclosureOpen = false;
 			render();
