@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.28
+// @version      0.2.29
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -36,9 +36,11 @@
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
+	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
+	const PANEL_EDGE_GAP = 8;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
 		typeof window.PDA_httpPost === "function";
@@ -96,6 +98,7 @@
 		lastHighlightRecommendation: null,
 		highlightObserver: null,
 		highlightRetryQueued: false,
+		dragSuppressTapUntil: 0,
 	};
 
 	let lastRenderedMarkup = "";
@@ -138,7 +141,13 @@
 			border-bottom: 1px solid #5c4318;
 			cursor: pointer;
 			user-select: none;
-			touch-action: manipulation;
+			touch-action: none;
+		}
+		#${PANEL_ID} .ocp-header:hover {
+			cursor: move;
+		}
+		#${PANEL_ID}.ocp-dragging {
+			transition: none;
 		}
 		#${PANEL_ID} .ocp-title {
 			font-weight: 700;
@@ -480,6 +489,15 @@
 		state.disclosureOpen = false;
 		render();
 	});
+	registerMenuCommand("OC Planner: reset position", () => {
+		storage.remove(POSITION_STORAGE_KEY);
+		const panel = document.getElementById(PANEL_ID);
+		if (!panel) return;
+		panel.style.left = "";
+		panel.style.top = "";
+		panel.style.right = "";
+		panel.style.bottom = "";
+	});
 
 	const escapeHtml = (value) =>
 		String(value ?? "")
@@ -711,6 +729,61 @@
 			window.clearTimeout(state.autoRefreshTimer);
 			state.autoRefreshTimer = undefined;
 		}
+	};
+
+	const getStoredPanelPosition = () => {
+		const raw = storage.get(POSITION_STORAGE_KEY, "");
+		if (!raw) return null;
+
+		try {
+			const position = JSON.parse(String(raw));
+			const left = Number(position?.left);
+			const top = Number(position?.top);
+			if (Number.isFinite(left) && Number.isFinite(top)) return { left, top };
+		} catch (_error) {
+			// Bad stored coordinates should not break the panel.
+		}
+
+		storage.remove(POSITION_STORAGE_KEY);
+		return null;
+	};
+
+	const savePanelPosition = (position) => {
+		storage.set(
+			POSITION_STORAGE_KEY,
+			JSON.stringify({
+				left: Math.round(position.left),
+				top: Math.round(position.top),
+			})
+		);
+	};
+
+	const clampPanelPosition = (panel, left, top) => {
+		const width = panel.offsetWidth || panel.getBoundingClientRect().width || 340;
+		const height = panel.offsetHeight || panel.getBoundingClientRect().height || 80;
+		const maxLeft = Math.max(PANEL_EDGE_GAP, window.innerWidth - width - PANEL_EDGE_GAP);
+		const maxTop = Math.max(PANEL_EDGE_GAP, window.innerHeight - height - PANEL_EDGE_GAP);
+
+		return {
+			left: Math.min(Math.max(PANEL_EDGE_GAP, left), maxLeft),
+			top: Math.min(Math.max(PANEL_EDGE_GAP, top), maxTop),
+		};
+	};
+
+	const setPanelPosition = (panel, position, persist = false) => {
+		if (!panel || !position) return;
+		const clamped = clampPanelPosition(panel, position.left, position.top);
+		panel.style.left = `${clamped.left}px`;
+		panel.style.top = `${clamped.top}px`;
+		panel.style.right = "auto";
+		panel.style.bottom = "auto";
+		if (persist) savePanelPosition(clamped);
+	};
+
+	const applyStoredPanelPosition = () => {
+		const panel = document.getElementById(PANEL_ID);
+		const position = getStoredPanelPosition();
+		if (panel && position) setPanelPosition(panel, position);
 	};
 
 	const formatTimestamp = (secondsOrIso) => {
@@ -1154,14 +1227,65 @@
 		if (!element) return;
 		let lastTouchAt = 0;
 		element.addEventListener("touchend", (event) => {
+			if (Date.now() < state.dragSuppressTapUntil) return;
 			lastTouchAt = Date.now();
 			event.preventDefault();
 			handler(event);
 		});
 		element.addEventListener("click", (event) => {
+			if (Date.now() < state.dragSuppressTapUntil) return;
 			if (Date.now() - lastTouchAt < 500) return;
 			handler(event);
 		});
+	};
+
+	const attachPanelDragHandler = (panel) => {
+		const header = panel?.querySelector(".ocp-header");
+		if (!header) return;
+
+		let drag = null;
+		const stopDrag = (event) => {
+			if (!drag || event.pointerId !== drag.pointerId) return;
+			header.releasePointerCapture?.(event.pointerId);
+			panel.classList.remove("ocp-dragging");
+			if (drag.moved) {
+				event.preventDefault();
+				state.dragSuppressTapUntil = Date.now() + 700;
+				const rect = panel.getBoundingClientRect();
+				setPanelPosition(panel, { left: rect.left, top: rect.top }, true);
+			}
+			drag = null;
+		};
+
+		header.addEventListener("pointerdown", (event) => {
+			if (event.button !== undefined && event.button !== 0) return;
+			if (event.target?.closest?.(".ocp-actions, button, input, a, summary, details")) return;
+			const rect = panel.getBoundingClientRect();
+			drag = {
+				pointerId: event.pointerId,
+				startX: event.clientX,
+				startY: event.clientY,
+				left: rect.left,
+				top: rect.top,
+				moved: false,
+			};
+			header.setPointerCapture?.(event.pointerId);
+		});
+
+		header.addEventListener("pointermove", (event) => {
+			if (!drag || event.pointerId !== drag.pointerId) return;
+			const dx = event.clientX - drag.startX;
+			const dy = event.clientY - drag.startY;
+			if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+			drag.moved = true;
+			state.dragSuppressTapUntil = Date.now() + 700;
+			panel.classList.add("ocp-dragging");
+			event.preventDefault();
+			setPanelPosition(panel, { left: drag.left + dx, top: drag.top + dy });
+		});
+
+		header.addEventListener("pointerup", stopDrag);
+		header.addEventListener("pointercancel", stopDrag);
 	};
 
 	const collapsePanelWithoutRender = () => {
@@ -1405,6 +1529,8 @@
 		panel.innerHTML = markup;
 		lastRenderedMarkup = markup;
 		panel.classList.toggle("collapsed", state.collapsed);
+		applyStoredPanelPosition();
+		attachPanelDragHandler(panel);
 
 		const toggleCollapsed = () => {
 			setCollapsed(!state.collapsed);
@@ -1496,6 +1622,7 @@
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
+	window.addEventListener("resize", applyStoredPanelPosition);
 	window.setInterval(syncPageActivation, 1500);
 
 	if (document.readyState === "loading") {
