@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.19
+// @version      0.2.20
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -15,7 +15,8 @@
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
-// @connect      *
+// @connect      api.torn.com
+// @connect      askelads.grusmedia.no
 // @noframes
 // ==/UserScript==
 
@@ -34,9 +35,11 @@
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
+	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
+	const STALE_PLANNER_SECONDS = 15 * 60;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
 		typeof window.PDA_httpPost === "function";
@@ -88,9 +91,12 @@
 		progress: "",
 		autoRefreshTimer: undefined,
 		active: false,
-		collapsed: false,
+		collapsed: String(storage.get(COLLAPSED_STORAGE_KEY, "") || "") === "1",
 		disclosureOpen: false,
 		pendingHighlight: null,
+		lastHighlightRecommendation: null,
+		highlightObserver: null,
+		highlightRetryQueued: false,
 	};
 
 	let lastRenderedMarkup = "";
@@ -140,6 +146,11 @@
 			display: flex;
 			align-items: center;
 			gap: 6px;
+		}
+		#${PANEL_ID} .ocp-highlight-again {
+			padding: 4px 6px;
+			font-weight: 700;
+			line-height: 1;
 		}
 		#${PANEL_ID} .ocp-icon-button,
 		#${PANEL_ID} .ocp-button {
@@ -206,6 +217,27 @@
 		#${PANEL_ID} .ocp-status {
 			margin-top: 6px;
 			color: #b9d8ff;
+		}
+		#${PANEL_ID} .ocp-status-line {
+			display: flex;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 4px 6px;
+			margin-top: 6px;
+		}
+		#${PANEL_ID} .ocp-pill {
+			display: inline-flex;
+			align-items: center;
+			border: 1px solid #456178;
+			background: #182536;
+			color: #b9d8ff;
+			padding: 2px 5px;
+			font-size: 11px;
+		}
+		#${PANEL_ID} .ocp-pill.stale {
+			border-color: #aa8f53;
+			background: #2a2416;
+			color: #ffe3a6;
 		}
 		#${PANEL_ID} .ocp-card {
 			margin-top: 7px;
@@ -658,6 +690,9 @@
 	const removePanel = () => {
 		document.getElementById(PANEL_ID)?.remove();
 		lastRenderedMarkup = "";
+		state.highlightObserver?.disconnect();
+		state.highlightObserver = null;
+		state.highlightRetryQueued = false;
 		if (state.autoRefreshTimer) {
 			window.clearTimeout(state.autoRefreshTimer);
 			state.autoRefreshTimer = undefined;
@@ -679,6 +714,13 @@
 		});
 	};
 
+	const toUnixSeconds = (secondsOrIso) => {
+		if (!secondsOrIso) return 0;
+		if (typeof secondsOrIso === "number") return secondsOrIso;
+		const parsed = new Date(secondsOrIso).getTime();
+		return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+	};
+
 	const formatRelative = (seconds) => {
 		if (!seconds) return "now";
 		const diff = seconds - Math.floor(Date.now() / 1000);
@@ -693,10 +735,42 @@
 		return remainingHours ? `${days}d ${remainingHours}h` : `${days}d`;
 	};
 
+	const formatAge = (secondsOrIso) => {
+		const seconds = toUnixSeconds(secondsOrIso);
+		if (!seconds) return "";
+		const diff = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
+		const minutes = Math.floor(diff / 60);
+		if (minutes < 1) return "just now";
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		const remainingMinutes = minutes % 60;
+		if (hours < 48) return remainingMinutes ? `${hours}h ${remainingMinutes}m ago` : `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	};
+
 	const formatChance = (chance) => {
 		const numeric = Number(chance);
 		if (!Number.isFinite(numeric)) return "";
 		return `${(numeric * 100).toFixed(1)}%`;
+	};
+
+	const getFriendlyErrorMessage = (error) => {
+		const message = String(error?.message || "");
+		const lower = message.toLowerCase();
+		if (lower.includes("torn profile") || lower.includes("torn api") || lower.includes("api rejected")) {
+			return `${message} Try using a fresh Torn API key with profile access.`;
+		}
+		if (lower.includes("oc planner snapshot") || lower.includes("saved oc planner") || lower.includes("backend")) {
+			return `${message} The planner backend may be down, blocked, or routed incorrectly.`;
+		}
+		if (lower.includes("expected json")) {
+			return `${message} Check that /api requests reach the backend, not the frontend.`;
+		}
+		if (lower.includes("timed out") || lower.includes("network")) {
+			return `${message} Check your connection, VPN/adblocker, and whether Torn or the planner host is reachable.`;
+		}
+		return message || "Could not load OC recommendation.";
 	};
 
 	const getCrimeUrl = (crimeId) => {
@@ -819,10 +893,23 @@
 
 	const queueHighlightRecommendation = (recommendation) => {
 		if (!recommendation?.crimeId) return;
+		state.lastHighlightRecommendation = recommendation;
 		state.pendingHighlight = {
 			recommendation,
 			startedAt: Date.now(),
 		};
+		state.highlightObserver?.disconnect();
+		if (typeof MutationObserver === "function" && document.body) {
+			state.highlightObserver = new MutationObserver(() => {
+				if (!state.pendingHighlight || state.highlightRetryQueued) return;
+				state.highlightRetryQueued = true;
+				window.setTimeout(() => {
+					state.highlightRetryQueued = false;
+					retryPendingHighlight();
+				}, 150);
+			});
+			state.highlightObserver.observe(document.body, { childList: true, subtree: true });
+		}
 		[150, 400, 800, 1300, 2000, 3000, 4500, 6500, 9000, 12000, 16000].forEach((delay) => {
 			window.setTimeout(() => retryPendingHighlight(), delay);
 		});
@@ -834,6 +921,9 @@
 		highlightRecommendation(pending.recommendation);
 		if (Date.now() - pending.startedAt > 17000) {
 			state.pendingHighlight = null;
+			state.highlightObserver?.disconnect();
+			state.highlightObserver = null;
+			state.highlightRetryQueued = false;
 		}
 	};
 
@@ -1008,6 +1098,7 @@
 
 	const setCollapsed = (collapsed) => {
 		state.collapsed = !!collapsed;
+		storage.set(COLLAPSED_STORAGE_KEY, state.collapsed ? "1" : "0");
 		document.getElementById(PANEL_ID)?.classList.toggle("collapsed", state.collapsed);
 		render();
 	};
@@ -1069,7 +1160,7 @@
 			scheduleAutoRefresh();
 			clearRecommendationHighlights();
 		} catch (error) {
-			state.error = error?.message || "Could not load OC recommendation.";
+			state.error = getFriendlyErrorMessage(error);
 			state.progress = "";
 		} finally {
 			state.loading = false;
@@ -1080,10 +1171,21 @@
 	const scheduleAutoRefresh = () => {
 		if (state.autoRefreshTimer) window.clearTimeout(state.autoRefreshTimer);
 		state.autoRefreshTimer = window.setTimeout(() => {
+			if (document.visibilityState === "hidden") {
+				scheduleAutoRefresh();
+				return;
+			}
 			if (state.active && isOcCrimesPage() && getStoredKey()) {
 				refreshRecommendations(false);
 			}
 		}, AUTO_REFRESH_MS);
+	};
+
+	const resumeVisibleRefresh = () => {
+		if (document.visibilityState !== "visible") return;
+		if (state.active && isOcCrimesPage() && getStoredKey() && !state.loading) {
+			refreshRecommendations(false);
+		}
 	};
 
 	const statItem = (label, value) =>
@@ -1161,6 +1263,14 @@
 		if (!payload) return "";
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
+		const plannerAge = formatAge(payload.plannerGeneratedAt);
+		const plannerGeneratedSeconds = toUnixSeconds(payload.plannerGeneratedAt);
+		const isStale =
+			plannerGeneratedSeconds > 0 &&
+			Math.floor(Date.now() / 1000) - plannerGeneratedSeconds > STALE_PLANNER_SECONDS;
+		const plannerPill = plannerAge
+			? `<span class="ocp-pill ${isStale ? "stale" : ""}">${escapeHtml(isStale ? `Stale ${plannerAge}` : `Planner ${plannerAge}`)}</span>`
+			: "";
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
@@ -1172,9 +1282,10 @@
 			: "";
 
 		return `
-			<div class="ocp-status">
-				${escapeHtml(payload.memberName || "You")}
-				${payload.plannerGeneratedAt ? ` - planner ${escapeHtml(formatTimestamp(payload.plannerGeneratedAt))}` : ""}
+			<div class="ocp-status-line">
+				<span>${escapeHtml(payload.memberName || "You")}</span>
+				${plannerPill}
+				${payload.plannerGeneratedAt ? `<span class="ocp-muted">${escapeHtml(formatTimestamp(payload.plannerGeneratedAt))}</span>` : ""}
 			</div>
 			${cards}
 			${unassigned}
@@ -1201,6 +1312,9 @@
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
 		const collapsed = state.collapsed;
+		const highlightAgain = state.lastHighlightRecommendation
+			? `<button class="ocp-button ocp-highlight-again" title="Highlight recommendation again">HL</button>`
+			: "";
 		const keyControls = savedKey
 			? `
 				<div class="ocp-row">
@@ -1220,6 +1334,7 @@
 			<div class="ocp-header">
 				<div class="ocp-title">OC Planner</div>
 				<div class="ocp-actions">
+					${highlightAgain}
 					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
 				</div>
 			</div>
@@ -1230,7 +1345,7 @@
 				${state.error ? `<div class="ocp-error">${escapeHtml(state.error)}</div>` : ""}
 				${renderResults()}
 				<details class="ocp-disclosure"${state.disclosureOpen ? " open" : ""}>
-					<summary>API key use</summary>
+					<summary>${savedKey ? "Privacy" : "API key use"}</summary>
 					<table>
 						<tr><th>Data storage</th><td>API key and profile cache are stored locally by your userscript manager or Torn PDA.</td></tr>
 						<tr><th>Data sharing</th><td>Your key is sent to Torn's official API for profile lookup. It is not sent to the OC Planner backend.</td></tr>
@@ -1255,6 +1370,10 @@
 		addTapHandler(panel.querySelector(".ocp-collapse"), (event) => {
 			event.stopPropagation();
 			toggleCollapsed();
+		});
+		addTapHandler(panel.querySelector(".ocp-highlight-again"), (event) => {
+			event.stopPropagation();
+			queueHighlightRecommendation(state.lastHighlightRecommendation);
 		});
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
@@ -1333,6 +1452,7 @@
 		window.setTimeout(() => retryPendingHighlight(), 600);
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
+	document.addEventListener("visibilitychange", resumeVisibleRefresh);
 	window.setInterval(syncPageActivation, 1500);
 
 	if (document.readyState === "loading") {
