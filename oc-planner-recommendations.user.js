@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.18
+// @version      0.2.19
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -631,7 +631,19 @@
 		state.profile = null;
 	};
 
+	const isChallengePage = () => {
+		const title = normalizeText(document.title);
+		return (
+			title.includes("just a moment") ||
+			title.includes("checking your browser") ||
+			!!document.querySelector(
+				"#challenge-running, .cf-browser-verification, [id*='cf-challenge'], [class*='cf-challenge'], iframe[src*='challenges.cloudflare.com'], script[src*='challenges.cloudflare.com']"
+			)
+		);
+	};
+
 	const isOcCrimesPage = () => {
+		if (isChallengePage()) return false;
 		const url = new URL(window.location.href);
 		const hash = decodeURIComponent(url.hash || "").toLowerCase();
 		const fullUrl = decodeURIComponent(window.location.href).toLowerCase();
