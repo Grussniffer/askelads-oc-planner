@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.20
+// @version      0.2.21
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -785,6 +785,11 @@
 			.replace(/\s+/g, " ")
 			.trim();
 
+	const normalizeRoleText = (value) =>
+		normalizeText(value)
+			.replace(/[^a-z0-9]+/g, " ")
+			.trim();
+
 	const getElementCrimeId = (element) => {
 		const directId =
 			element.getAttribute("data-crime-id") ||
@@ -836,32 +841,47 @@
 			.find((element) => normalizeText(element?.textContent).includes(`oc #${id}`)) || null;
 	};
 
+	const findTornSlotRoleElement = (scope, roleTerms) => {
+		const slotHeaders = Array.from(scope.querySelectorAll("button[class*='slotHeader'], [class*='slotHeader']"));
+		const match = slotHeaders.find((header) => {
+			if (header.closest(`#${PANEL_ID}`)) return false;
+			const title = header.querySelector("[class*='title']");
+			const text = normalizeRoleText(title?.textContent || header.textContent);
+			return text && roleTerms.some((term) => text === term || text.includes(term));
+		});
+		return match?.closest("[class*='wrapper']") || match || null;
+	};
+
 	const findRoleElement = (crimeElement, recommendation) => {
-		if (!crimeElement || !recommendation) return null;
+		if (!recommendation) return null;
 		const roleTerms = [
 			recommendation.position,
 			recommendation.role,
 			recommendation.roleImpactLabel,
 		]
-			.map(normalizeText)
+			.map(normalizeRoleText)
 			.filter(Boolean);
 		if (!roleTerms.length) return null;
 
+		const scope = crimeElement || document;
+		const tornSlotMatch = findTornSlotRoleElement(scope, roleTerms);
+		if (tornSlotMatch) return tornSlotMatch;
+
 		const candidates = Array.from(
-			crimeElement.querySelectorAll(
-				"li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role'], [class*='member'], [class*='Member'], button, a"
+			scope.querySelectorAll(
+				"li, tr, [role='row'], [class*='wrapper'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role'], [class*='member'], [class*='Member'], button, a"
 			)
 		);
 
 		const match = candidates
-			.filter((element) => element !== crimeElement)
-			.sort((a, b) => normalizeText(a.textContent).length - normalizeText(b.textContent).length)
+			.filter((element) => element !== crimeElement && !element.closest(`#${PANEL_ID}`))
+			.sort((a, b) => normalizeRoleText(a.textContent).length - normalizeRoleText(b.textContent).length)
 			.find((element) => {
-				const text = normalizeText(element.textContent);
+				const text = normalizeRoleText(element.textContent);
 				return text && roleTerms.some((term) => text.includes(term));
 			});
 
-		return match?.closest("li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") || match || null;
+		return match?.closest("li, tr, [role='row'], [class*='wrapper'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") || match || null;
 	};
 
 	const clearRecommendationHighlights = () => {
