@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.27
+// @version      0.2.28
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -109,10 +109,14 @@
 			width: min(340px, calc(100vw - 28px));
 			max-height: calc(100vh - 28px);
 			font: 12px/1.35 Arial, Helvetica, sans-serif;
-			color: #e7ecf3;
-			background: #111820;
-			border: 1px solid #2d3b4b;
-			box-shadow: 0 12px 36px rgba(0, 0, 0, 0.42);
+			color: #f1e8d7;
+			background:
+				linear-gradient(145deg, rgba(31, 23, 14, 0.97), rgba(9, 8, 7, 0.98) 58%),
+				#0d0b09;
+			border: 1px solid #5c4318;
+			border-radius: 8px;
+			box-shadow: 0 16px 38px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(216, 164, 57, 0.08) inset;
+			overflow: hidden;
 		}
 		#${PANEL_ID}.collapsed .ocp-body {
 			display: none;
@@ -130,16 +134,18 @@
 			justify-content: space-between;
 			gap: 6px;
 			padding: 7px 8px;
-			background: #1a2530;
-			border-bottom: 1px solid #2d3b4b;
+			background: linear-gradient(180deg, rgba(35, 25, 14, 0.96), rgba(14, 11, 8, 0.96));
+			border-bottom: 1px solid #5c4318;
 			cursor: pointer;
 			user-select: none;
 			touch-action: manipulation;
 		}
 		#${PANEL_ID} .ocp-title {
 			font-weight: 700;
-			font-size: 13px;
+			font-size: 14px;
 			letter-spacing: 0;
+			color: #f4d990;
+			text-shadow: 0 1px 0 #000;
 		}
 		#${PANEL_ID} .ocp-actions {
 			display: flex;
@@ -153,10 +159,13 @@
 		}
 		#${PANEL_ID} .ocp-icon-button,
 		#${PANEL_ID} .ocp-button {
-			border: 1px solid #3a4b5c;
-			background: #223040;
-			color: #e7ecf3;
+			border: 1px solid #4d5860;
+			background: linear-gradient(180deg, #2c3338, #171b1f);
+			color: #f3f0e8;
+			border-radius: 8px;
 			cursor: pointer;
+			font-weight: 700;
+			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset;
 		}
 		#${PANEL_ID} .ocp-icon-button {
 			width: 24px;
@@ -171,15 +180,17 @@
 		}
 		#${PANEL_ID} .ocp-icon-button:hover,
 		#${PANEL_ID} .ocp-button:hover {
-			background: #2c3c4f;
+			filter: brightness(1.1);
 		}
 		#${PANEL_ID} .ocp-button.primary {
-			border-color: #5284c7;
-			background: #285582;
+			border-color: #9f741d;
+			background: linear-gradient(180deg, #8b661f, #49300b);
+			color: #fff4d7;
 		}
 		#${PANEL_ID} .ocp-button.danger {
-			border-color: #8a3e45;
-			background: #51252b;
+			border-color: #7a3035;
+			background: linear-gradient(180deg, #6a2c30, #351015);
+			color: #ffe5e5;
 		}
 		#${PANEL_ID} .ocp-body {
 			padding: 8px;
@@ -198,24 +209,26 @@
 		}
 		#${PANEL_ID} .ocp-input {
 			width: 100%;
-			border: 1px solid #354454;
-			background: #0d131a;
-			color: #e7ecf3;
+			border: 1px solid #4a3718;
+			background: rgba(5, 5, 4, 0.78);
+			color: #f1e8d7;
+			border-radius: 8px;
 			padding: 6px;
 		}
 		#${PANEL_ID} .ocp-muted {
-			color: #a8b3c0;
+			color: #b7ad9e;
 		}
 		#${PANEL_ID} .ocp-error {
 			margin-top: 6px;
-			color: #ffd5d5;
-			background: #3b171c;
-			border: 1px solid #75303a;
+			color: #ffdada;
+			background: rgba(64, 18, 22, 0.76);
+			border: 1px solid #7a3035;
+			border-radius: 8px;
 			padding: 6px;
 		}
 		#${PANEL_ID} .ocp-status {
 			margin-top: 6px;
-			color: #b9d8ff;
+			color: #bee9b8;
 		}
 		#${PANEL_ID} .ocp-status-line {
 			display: flex;
@@ -227,21 +240,23 @@
 		#${PANEL_ID} .ocp-pill {
 			display: inline-flex;
 			align-items: center;
-			border: 1px solid #456178;
-			background: #182536;
-			color: #b9d8ff;
+			border: 1px solid #6d531f;
+			background: rgba(61, 42, 12, 0.72);
+			color: #f2d890;
+			border-radius: 7px;
 			padding: 2px 5px;
 			font-size: 11px;
 		}
 		#${PANEL_ID} .ocp-card {
 			margin-top: 7px;
 			padding: 7px;
-			border: 1px solid #344353;
-			background: #151e28;
+			border: 1px solid #443319;
+			background: rgba(18, 15, 11, 0.78);
+			border-radius: 8px;
 		}
 		#${PANEL_ID} .ocp-card.next {
-			border-color: #70a66d;
-			background: #15251d;
+			border-color: #618f50;
+			background: linear-gradient(180deg, rgba(23, 48, 24, 0.86), rgba(14, 27, 15, 0.86));
 		}
 		#${PANEL_ID} .ocp-card-link {
 			display: inline-flex;
@@ -249,15 +264,17 @@
 			justify-content: center;
 			margin-top: 6px;
 			width: 100%;
-			border: 1px solid #82b77b;
-			background: #264d2e;
+			border: 1px solid #65a25d;
+			background: linear-gradient(180deg, #315d35, #17361e);
 			color: #f2fff1;
 			padding: 6px 7px;
 			text-decoration: none;
 			font-weight: 700;
+			border-radius: 6px;
+			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset;
 		}
 		#${PANEL_ID} .ocp-card-link:hover {
-			background: #32633b;
+			filter: brightness(1.1);
 		}
 		.askeladds-oc-planner-highlight {
 			outline: 3px solid #82d173 !important;
@@ -268,8 +285,8 @@
 			box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.26), 0 0 18px rgba(255, 209, 102, 0.5) !important;
 		}
 		#${PANEL_ID} .ocp-card.need-more {
-			border-color: #aa8f53;
-			background: #2a2416;
+			border-color: #8d6c25;
+			background: rgba(49, 35, 10, 0.78);
 		}
 		#${PANEL_ID} .ocp-card-title {
 			font-weight: 700;
@@ -292,7 +309,7 @@
 			margin-top: 5px;
 		}
 		#${PANEL_ID} .ocp-label {
-			color: #a8b3c0;
+			color: #b7ad9e;
 		}
 		#${PANEL_ID} .ocp-value {
 			text-align: right;
@@ -311,25 +328,25 @@
 			white-space: normal;
 		}
 		#${PANEL_ID} .ocp-stat-label {
-			color: #a8b3c0;
+			color: #b7ad9e;
 			flex: 0 0 auto;
 		}
 		#${PANEL_ID} .ocp-stat-value {
-			color: #e7ecf3;
+			color: #f1e8d7;
 			overflow-wrap: anywhere;
 		}
 		#${PANEL_ID} .ocp-footer {
 			margin-top: 6px;
 			font-size: 12px;
-			color: #9ba8b7;
+			color: #9c8f7c;
 		}
 		#${PANEL_ID} .ocp-team {
 			margin-top: 6px;
-			border-top: 1px solid #2f3d4d;
+			border-top: 1px solid #403018;
 			padding-top: 5px;
 		}
 		#${PANEL_ID} .ocp-team-title {
-			color: #a8b3c0;
+			color: #b7ad9e;
 			font-weight: 700;
 			margin-bottom: 3px;
 		}
@@ -342,55 +359,58 @@
 			display: inline-flex;
 			gap: 3px;
 			max-width: 100%;
-			border: 1px solid #354454;
-			background: #101820;
+			border: 1px solid #42321a;
+			background: rgba(9, 10, 10, 0.72);
+			border-radius: 5px;
 			padding: 2px 5px;
 		}
 		#${PANEL_ID} .ocp-team-chip.you {
-			border-color: #70a66d;
-			background: #172719;
+			border-color: #69a45d;
+			background: rgba(25, 48, 23, 0.78);
 		}
 		#${PANEL_ID} .ocp-chip-slot {
-			color: #a8b3c0;
+			color: #b7ad9e;
 			flex: 0 0 auto;
 		}
 		#${PANEL_ID} .ocp-chip-member {
-			color: #e7ecf3;
+			color: #f1e8d7;
 			overflow-wrap: anywhere;
 		}
 		#${PANEL_ID} .ocp-team-chip.you .ocp-chip-member {
-			color: #b7f5b1;
+			color: #baf0ad;
 			font-weight: 700;
 		}
 		#${PANEL_ID} .ocp-disclosure {
 			margin-top: 8px;
-			border: 1px solid #718095;
-			background: #f4f7fb;
-			color: #17202b;
+			border: 1px solid #4a3718;
+			background: rgba(13, 12, 10, 0.8);
+			color: #f1e8d7;
+			border-radius: 8px;
+			overflow: hidden;
 		}
 		#${PANEL_ID} .ocp-disclosure summary {
 			cursor: pointer;
 			padding: 8px;
-			color: #111820;
+			color: #f2d890;
 			font-weight: 700;
 		}
 		#${PANEL_ID} .ocp-disclosure table {
 			width: 100%;
 			border-collapse: collapse;
 			font-size: 12px;
-			background: #ffffff;
+			background: rgba(7, 7, 6, 0.72);
 		}
 		#${PANEL_ID} .ocp-disclosure th,
 		#${PANEL_ID} .ocp-disclosure td {
-			border-top: 1px solid #d3dbe6;
+			border-top: 1px solid #3b2c17;
 			padding: 6px;
 			text-align: left;
 			vertical-align: top;
-			color: #17202b;
+			color: #f1e8d7;
 		}
 		#${PANEL_ID} .ocp-disclosure th {
 			width: 38%;
-			color: #354255;
+			color: #cdbb98;
 			font-weight: 700;
 		}
 		@media (max-width: 520px) {
@@ -1355,7 +1375,7 @@
 
 		const markup = `
 			<div class="ocp-header">
-				<div class="ocp-title">OC Planner</div>
+				<div class="ocp-title">Askelads OC</div>
 				<div class="ocp-actions">
 					${highlightAgain}
 					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
