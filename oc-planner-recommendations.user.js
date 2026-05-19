@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.23
+// @version      0.2.24
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -821,13 +821,15 @@
 			"li, tr, [data-crime-id], [data-crimeid], [class*='crime'], [class*='Crime'], [class*='card'], [class*='row']"
 		) || element;
 
+	const isInsidePanel = (element) => !!element?.closest?.(`#${PANEL_ID}`);
+
 	const findCrimeElement = (crimeId) => {
 		const id = String(crimeId || "");
 		if (!id) return null;
 
 		const candidates = Array.from(
 			document.querySelectorAll("a[href], button, [data-crime-id], [data-crimeid], [data-oc-id], [data-id]")
-		);
+		).filter((element) => !isInsidePanel(element));
 		const match = candidates.find((element) => getElementCrimeId(element) === id);
 		if (match) return getCrimeContainer(match);
 
@@ -837,7 +839,7 @@
 	};
 
 	const findRoleElement = (crimeElement, recommendation) => {
-		if (!crimeElement || !recommendation) return null;
+		if (!recommendation) return null;
 		const roleTerms = [
 			recommendation.position,
 			recommendation.role,
@@ -847,11 +849,12 @@
 			.filter(Boolean);
 		if (!roleTerms.length) return null;
 
+		const scope = crimeElement || document;
 		const candidates = Array.from(
-			crimeElement.querySelectorAll(
+			scope.querySelectorAll(
 				"li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role'], [class*='member'], [class*='Member'], button, a"
 			)
-		);
+		).filter((element) => !isInsidePanel(element));
 
 		const match = candidates
 			.filter((element) => element !== crimeElement)
