@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.26
+// @version      0.2.27
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -39,7 +39,6 @@
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
-	const STALE_PLANNER_SECONDS = 15 * 60;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
 		typeof window.PDA_httpPost === "function";
@@ -233,11 +232,6 @@
 			color: #b9d8ff;
 			padding: 2px 5px;
 			font-size: 11px;
-		}
-		#${PANEL_ID} .ocp-pill.stale {
-			border-color: #aa8f53;
-			background: #2a2416;
-			color: #ffe3a6;
 		}
 		#${PANEL_ID} .ocp-card {
 			margin-top: 7px;
@@ -1297,12 +1291,8 @@
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
 		const plannerAge = formatAge(payload.plannerGeneratedAt);
-		const plannerGeneratedSeconds = toUnixSeconds(payload.plannerGeneratedAt);
-		const isStale =
-			plannerGeneratedSeconds > 0 &&
-			Math.floor(Date.now() / 1000) - plannerGeneratedSeconds > STALE_PLANNER_SECONDS;
 		const plannerPill = plannerAge
-			? `<span class="ocp-pill ${isStale ? "stale" : ""}">${escapeHtml(isStale ? `Stale ${plannerAge}` : `Planner ${plannerAge}`)}</span>`
+			? `<span class="ocp-pill">${escapeHtml(`Planner ${plannerAge}`)}</span>`
 			: "";
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
