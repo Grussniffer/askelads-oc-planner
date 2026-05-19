@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.24
+// @version      0.2.25
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -785,6 +785,37 @@
 			.replace(/\s+/g, " ")
 			.trim();
 
+	const getRoleTerms = (recommendation) =>
+		[
+			recommendation?.position,
+			recommendation?.role,
+			recommendation?.roleImpactLabel,
+		]
+			.map(normalizeText)
+			.filter(Boolean);
+
+	const findExactRoleTitleElement = (scope, recommendation) => {
+		const roleTerms = getRoleTerms(recommendation);
+		if (!roleTerms.length) return null;
+		const root = scope || document;
+		const candidates = Array.from(
+			root.querySelectorAll(
+				"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']"
+			)
+		).filter((element) => !isInsidePanel(element));
+
+		const match = candidates.find((element) => {
+			const text = normalizeText(element.querySelector?.("[class*='title']")?.textContent || element.textContent);
+			return roleTerms.some((term) => text === term || text.startsWith(`${term} `));
+		});
+
+		return (
+			match?.closest("[class*='wrapper'], [class*='slot'], [class*='Slot'], li, tr, [role='row']") ||
+			match ||
+			null
+		);
+	};
+
 	const getElementCrimeId = (element) => {
 		const directId =
 			element.getAttribute("data-crime-id") ||
@@ -840,13 +871,12 @@
 
 	const findRoleElement = (crimeElement, recommendation) => {
 		if (!recommendation) return null;
-		const roleTerms = [
-			recommendation.position,
-			recommendation.role,
-			recommendation.roleImpactLabel,
-		]
-			.map(normalizeText)
-			.filter(Boolean);
+		const exactTitleMatch =
+			findExactRoleTitleElement(crimeElement, recommendation) ||
+			findExactRoleTitleElement(document, recommendation);
+		if (exactTitleMatch) return exactTitleMatch;
+
+		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
 
 		const scope = crimeElement || document;
