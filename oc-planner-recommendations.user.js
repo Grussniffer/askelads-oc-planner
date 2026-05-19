@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.29
+// @version      0.2.30
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -1103,7 +1103,7 @@
 			);
 		return {
 			id,
-			name: name || (id ? `Player ${id}` : "Open"),
+			name: name || (id ? `Player ${id}` : "No pick"),
 		};
 	};
 
@@ -1410,7 +1410,7 @@
 					statItem("Done", recommendation.currentCrimeName),
 					statItem("Step", step ? `#${step}` : "")
 				)}
-				${expectedTeam ? `<div class="ocp-team"><div class="ocp-team-title">Expected team</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
+				${expectedTeam ? `<div class="ocp-team" title="Planner snapshot lineup, not Torn's live joined roster."><div class="ocp-team-title">Planner lineup</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
 				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Go to OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
