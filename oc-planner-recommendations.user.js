@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.30
+// @version      0.2.31
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -32,6 +32,7 @@
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
 	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
+	const SCRIPT_VERSION = "0.2.31";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -651,6 +652,36 @@
 			throw new Error("No saved OC planner run was returned by the backend.");
 		}
 		return payload.planner;
+	};
+
+	const getProfileFactionId = (profile) =>
+		profile?.faction?.faction_id ||
+		profile?.faction?.id ||
+		profile?.faction_id ||
+		"";
+
+	const recordScriptAccess = async (profile, planner) => {
+		const playerId = Number(profile?.player_id || 0);
+		if (!playerId) return;
+		try {
+			await requestJson({
+				method: "POST",
+				url: getBackendApiUrl("/api/oc-planner/script-access"),
+				headers: { "Content-Type": "application/json" },
+				data: JSON.stringify({
+					playerId,
+					name: profile?.name || "",
+					factionId: getProfileFactionId(profile),
+					scriptVersion: SCRIPT_VERSION,
+					plannerGeneratedAt: planner?.generatedAt,
+					plannerRunId: planner?.id,
+				}),
+				label: "OC Planner access check-in",
+				timeout: 4000,
+			});
+		} catch (error) {
+			console.warn("OC Planner access check-in failed:", error?.message || error);
+		}
 	};
 
 	const getStoredKey = () => String(storage.get(STORAGE_KEY, "") || "").trim();
@@ -1323,6 +1354,7 @@
 			render();
 
 			const planner = await getLatestPlanner();
+			await recordScriptAccess(state.profile, planner);
 
 			state.lastPlanner = planner;
 			state.lastPayload = buildMemberPayload(state.profile, planner);
