@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.25
+// @version      0.2.26
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -105,7 +105,7 @@
 		#${PANEL_ID} {
 			position: fixed;
 			right: 14px;
-			bottom: 14px;
+			bottom: 54px;
 			z-index: 999999;
 			width: min(340px, calc(100vw - 28px));
 			max-height: calc(100vh - 28px);
