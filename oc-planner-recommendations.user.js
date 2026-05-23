@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.31
+// @version      0.2.32
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -32,7 +32,7 @@
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
 	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.31";
+	const SCRIPT_VERSION = "0.2.32";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -377,6 +377,9 @@
 		#${PANEL_ID} .ocp-team-chip.you {
 			border-color: #69a45d;
 			background: rgba(25, 48, 23, 0.78);
+		}
+		#${PANEL_ID} .ocp-team-chip.current {
+			border-color: #8d6c25;
 		}
 		#${PANEL_ID} .ocp-chip-slot {
 			color: #b7ad9e;
@@ -1081,6 +1084,7 @@
 	const getMemberId = (member) =>
 		Number(
 			member?.memberId ||
+				member?.userId ||
 				member?.playerId ||
 				member?.player_id ||
 				member?.id ||
@@ -1093,6 +1097,7 @@
 		const id = getMemberId(member);
 		return (
 			member.memberName ||
+			member.userName ||
 			member.playerName ||
 			member.player_name ||
 			member.name ||
@@ -1102,39 +1107,58 @@
 	};
 
 	const getSlotMember = (slot) => {
-		const member =
+		const currentMember =
+			slot.currentMember ||
+			slot.currentUser ||
+			slot.member ||
+			slot.user ||
+			slot.participant;
+		const plannedMember =
 			slot.expectedMember ||
 			slot.plannedMember ||
 			slot.assignedMember ||
-			slot.currentMember ||
-			slot.member ||
-			slot.user ||
-			slot.participant ||
 			slot.recommended ||
 			slot.soonRecommended;
-		const name =
-			getMemberName(member) ||
+		const hasCurrentMember = !!(
+			currentMember ||
+			slot.currentMemberName ||
+			slot.currentUserName ||
+			slot.currentMemberId ||
+			slot.currentUserId
+		);
+		const currentName =
+			getMemberName(currentMember) ||
+			slot.currentMemberName ||
+			slot.currentUserName ||
+			(hasCurrentMember ? slot.memberName || slot.playerName || slot.userName || slot.name : "");
+		const plannedName =
+			getMemberName(plannedMember) ||
 			slot.expectedMemberName ||
 			slot.plannedMemberName ||
-			slot.assignedMemberName ||
-			slot.currentMemberName ||
-			slot.memberName ||
-			slot.playerName ||
-			slot.name;
-		const id =
-			getMemberId(member) ||
+			slot.assignedMemberName;
+		const fallbackName = slot.memberName || slot.playerName || slot.userName || slot.name;
+		const name = currentName || plannedName || fallbackName;
+		const currentId =
+			getMemberId(currentMember) ||
+			Number(
+				slot.currentMemberId ||
+					slot.currentUserId ||
+					(hasCurrentMember ? slot.memberId || slot.playerId || slot.userId : 0) ||
+					0
+			);
+		const plannedId =
+			getMemberId(plannedMember) ||
 			Number(
 				slot.expectedMemberId ||
 					slot.plannedMemberId ||
 					slot.assignedMemberId ||
-					slot.currentMemberId ||
-					slot.memberId ||
-					slot.playerId ||
 					0
 			);
+		const id = currentId || plannedId || Number(slot.memberId || slot.playerId || slot.userId || 0);
 		return {
 			id,
 			name: name || (id ? `Player ${id}` : "No pick"),
+			isCurrent: hasCurrentMember,
 		};
 	};
 
@@ -1146,6 +1170,7 @@
 				memberId: member.id,
 				memberName: member.name,
 				isYou: Number(member.id) === Number(memberId),
+				isCurrent: member.isCurrent,
 			};
 		});
 
@@ -1161,10 +1186,11 @@
 							: undefined;
 
 				if (!recommended) continue;
+				const crimeId = crime.id || slot.crimeId || recommended.crimeId;
 
 				recommendations.push({
 					type: "slot",
-					crimeId: crime.id,
+					crimeId,
 					crimeName: crime.name || slot.crimeName || recommended.cprCrimeName,
 					difficulty: crime.difficulty,
 					status: crime.status || slot.status,
@@ -1417,7 +1443,7 @@
 		const expectedTeam = (recommendation.expectedTeam || [])
 			.map(
 				(member) => `
-					<span class="ocp-team-chip ${member.isYou ? "you" : ""}">
+					<span class="ocp-team-chip ${member.isYou ? "you" : ""} ${member.isCurrent ? "current" : ""}" title="${member.isCurrent ? "Joined/current slot member from planner snapshot" : "Planner pick"}">
 						<span class="ocp-chip-slot">${escapeHtml(member.slot)}:</span>
 						<span class="ocp-chip-member">${escapeHtml(member.memberName)}</span>
 					</span>
@@ -1442,7 +1468,7 @@
 					statItem("Done", recommendation.currentCrimeName),
 					statItem("Step", step ? `#${step}` : "")
 				)}
-				${expectedTeam ? `<div class="ocp-team" title="Planner snapshot lineup, not Torn's live joined roster."><div class="ocp-team-title">Planner lineup</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
+				${expectedTeam ? `<div class="ocp-team" title="Planner snapshot lineup, including joined members when the snapshot has them."><div class="ocp-team-title">Planner lineup</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
 				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Go to OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
