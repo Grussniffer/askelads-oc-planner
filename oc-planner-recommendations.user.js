@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.32
+// @version      0.2.33
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -32,7 +32,7 @@
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
 	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.32";
+	const SCRIPT_VERSION = "0.2.33";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -381,6 +381,10 @@
 		#${PANEL_ID} .ocp-team-chip.current {
 			border-color: #8d6c25;
 		}
+		#${PANEL_ID} .ocp-team-chip.forced {
+			border-color: #b88725;
+			background: rgba(60, 39, 8, 0.78);
+		}
 		#${PANEL_ID} .ocp-chip-slot {
 			color: #b7ad9e;
 			flex: 0 0 auto;
@@ -392,6 +396,12 @@
 		#${PANEL_ID} .ocp-team-chip.you .ocp-chip-member {
 			color: #baf0ad;
 			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-chip-flag {
+			color: #ffd98b;
+			font-size: 10px;
+			font-weight: 700;
+			text-transform: uppercase;
 		}
 		#${PANEL_ID} .ocp-disclosure {
 			margin-top: 8px;
@@ -1113,12 +1123,33 @@
 			slot.member ||
 			slot.user ||
 			slot.participant;
+		const forcedMember =
+			slot.forcedMember ||
+			slot.forcedUser ||
+			slot.manualMember ||
+			slot.manualUser ||
+			slot.lockedMember ||
+			slot.lockedUser ||
+			slot.pinnedMember ||
+			slot.pinnedUser ||
+			slot.overrideMember ||
+			slot.overrideUser;
 		const plannedMember =
+			forcedMember ||
 			slot.expectedMember ||
 			slot.plannedMember ||
 			slot.assignedMember ||
 			slot.recommended ||
 			slot.soonRecommended;
+		const isForced = !!(
+			forcedMember ||
+			plannedMember?.forced ||
+			currentMember?.forced ||
+			slot.forced ||
+			slot.isForced ||
+			slot.manuallyAssigned ||
+			slot.manualAssignment
+		);
 		const hasCurrentMember = !!(
 			currentMember ||
 			slot.currentMemberName ||
@@ -1133,6 +1164,16 @@
 			(hasCurrentMember ? slot.memberName || slot.playerName || slot.userName || slot.name : "");
 		const plannedName =
 			getMemberName(plannedMember) ||
+			slot.forcedMemberName ||
+			slot.forcedUserName ||
+			slot.manualMemberName ||
+			slot.manualUserName ||
+			slot.lockedMemberName ||
+			slot.lockedUserName ||
+			slot.pinnedMemberName ||
+			slot.pinnedUserName ||
+			slot.overrideMemberName ||
+			slot.overrideUserName ||
 			slot.expectedMemberName ||
 			slot.plannedMemberName ||
 			slot.assignedMemberName;
@@ -1149,7 +1190,17 @@
 		const plannedId =
 			getMemberId(plannedMember) ||
 			Number(
-				slot.expectedMemberId ||
+				slot.forcedMemberId ||
+					slot.forcedUserId ||
+					slot.manualMemberId ||
+					slot.manualUserId ||
+					slot.lockedMemberId ||
+					slot.lockedUserId ||
+					slot.pinnedMemberId ||
+					slot.pinnedUserId ||
+					slot.overrideMemberId ||
+					slot.overrideUserId ||
+					slot.expectedMemberId ||
 					slot.plannedMemberId ||
 					slot.assignedMemberId ||
 					0
@@ -1159,6 +1210,7 @@
 			id,
 			name: name || (id ? `Player ${id}` : "No pick"),
 			isCurrent: hasCurrentMember,
+			isForced,
 		};
 	};
 
@@ -1171,6 +1223,7 @@
 				memberName: member.name,
 				isYou: Number(member.id) === Number(memberId),
 				isCurrent: member.isCurrent,
+				isForced: member.isForced,
 			};
 		});
 
@@ -1443,9 +1496,10 @@
 		const expectedTeam = (recommendation.expectedTeam || [])
 			.map(
 				(member) => `
-					<span class="ocp-team-chip ${member.isYou ? "you" : ""} ${member.isCurrent ? "current" : ""}" title="${member.isCurrent ? "Joined/current slot member from planner snapshot" : "Planner pick"}">
+					<span class="ocp-team-chip ${member.isYou ? "you" : ""} ${member.isCurrent ? "current" : ""} ${member.isForced ? "forced" : ""}" title="${member.isForced ? "Forced planner assignment" : member.isCurrent ? "Joined/current slot member from planner snapshot" : "Planner pick"}">
 						<span class="ocp-chip-slot">${escapeHtml(member.slot)}:</span>
 						<span class="ocp-chip-member">${escapeHtml(member.memberName)}</span>
+						${member.isForced ? `<span class="ocp-chip-flag">Forced</span>` : ""}
 					</span>
 				`
 			)
