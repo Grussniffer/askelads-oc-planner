@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.33
+// @version      0.2.34
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -32,7 +32,7 @@
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
 	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.33";
+	const SCRIPT_VERSION = "0.2.34";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -925,26 +925,59 @@
 			.map(normalizeText)
 			.filter(Boolean);
 
+	const getPositionRoleHint = (recommendation) => {
+		const position = normalizeText(recommendation?.position);
+		const match = position.match(/^(.+?)\s*#\s*(\d+)$/);
+		if (!match) return null;
+		const role = normalizeText(match[1]);
+		const ordinal = Number(match[2]);
+		return role && Number.isInteger(ordinal) && ordinal > 0 ? { role, ordinal } : null;
+	};
+
+	const getRoleCandidateWrapper = (element) =>
+		element?.closest("[class*='wrapper'], [class*='slot'], [class*='Slot'], li, tr, [role='row']") ||
+		element ||
+		null;
+
+	const getRoleTitleText = (element) =>
+		normalizeText(element?.querySelector?.("[class*='title']")?.textContent || element?.textContent);
+
 	const findExactRoleTitleElement = (scope, recommendation) => {
 		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
 		const root = scope || document;
-		const candidates = Array.from(
+		const seenWrappers = new Set();
+		const entries = Array.from(
 			root.querySelectorAll(
 				"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']"
 			)
-		).filter((element) => !isInsidePanel(element));
+		)
+			.filter((element) => !isInsidePanel(element))
+			.map((element) => ({
+				text: getRoleTitleText(element),
+				wrapper: getRoleCandidateWrapper(element),
+			}))
+			.filter((entry) => {
+				if (!entry.text || !entry.wrapper || seenWrappers.has(entry.wrapper)) return false;
+				seenWrappers.add(entry.wrapper);
+				return true;
+			});
 
-		const match = candidates.find((element) => {
-			const text = normalizeText(element.querySelector?.("[class*='title']")?.textContent || element.textContent);
-			return roleTerms.some((term) => text === term || text.startsWith(`${term} `));
-		});
+		const positionHint = getPositionRoleHint(recommendation);
+		if (positionHint) {
+			const exactPosition = normalizeText(recommendation?.position);
+			const exactPositionMatch = entries.find((entry) => entry.text === exactPosition);
+			if (exactPositionMatch) return exactPositionMatch.wrapper;
+			const ordinalMatches = entries.filter(
+				(entry) => entry.text === positionHint.role || entry.text.startsWith(`${positionHint.role} `)
+			);
+			return ordinalMatches[positionHint.ordinal - 1]?.wrapper || null;
+		}
 
-		return (
-			match?.closest("[class*='wrapper'], [class*='slot'], [class*='Slot'], li, tr, [role='row']") ||
-			match ||
-			null
-		);
+		const exactMatch = entries.find((entry) => roleTerms.some((term) => entry.text === term));
+		if (exactMatch) return exactMatch.wrapper;
+
+		return entries.find((entry) => roleTerms.some((term) => entry.text.startsWith(`${term} `)))?.wrapper || null;
 	};
 
 	const getElementCrimeId = (element) => {
@@ -1006,6 +1039,7 @@
 			findExactRoleTitleElement(crimeElement, recommendation) ||
 			findExactRoleTitleElement(document, recommendation);
 		if (exactTitleMatch) return exactTitleMatch;
+		if (getPositionRoleHint(recommendation)) return null;
 
 		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
