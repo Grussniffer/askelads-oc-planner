@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.34
+// @version      0.2.35
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -32,7 +32,7 @@
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
 	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.34";
+	const SCRIPT_VERSION = "0.2.35";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -163,6 +163,11 @@
 			gap: 6px;
 		}
 		#${PANEL_ID} .ocp-highlight-again {
+			padding: 4px 6px;
+			font-weight: 700;
+			line-height: 1;
+		}
+		#${PANEL_ID} .ocp-highlight-stop {
 			padding: 4px 6px;
 			font-weight: 700;
 			line-height: 1;
@@ -1071,6 +1076,14 @@
 			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
 	};
 
+	const stopHighlightLock = (clearHighlights = true) => {
+		state.pendingHighlight = null;
+		state.highlightObserver?.disconnect();
+		state.highlightObserver = null;
+		state.highlightRetryQueued = false;
+		if (clearHighlights) clearRecommendationHighlights();
+	};
+
 	const highlightRecommendation = (recommendationOrCrimeId) => {
 		const recommendation =
 			typeof recommendationOrCrimeId === "object" && recommendationOrCrimeId
@@ -1116,12 +1129,13 @@
 	const retryPendingHighlight = () => {
 		const pending = state.pendingHighlight;
 		if (!pending) return;
-		highlightRecommendation(pending.recommendation);
+		const roleFound = highlightRecommendation(pending.recommendation);
+		if (roleFound) {
+			stopHighlightLock(false);
+			return;
+		}
 		if (Date.now() - pending.startedAt > 17000) {
-			state.pendingHighlight = null;
-			state.highlightObserver?.disconnect();
-			state.highlightObserver = null;
-			state.highlightRetryQueued = false;
+			stopHighlightLock(false);
 		}
 	};
 
@@ -1648,6 +1662,7 @@
 				<div class="ocp-title">Askelads OC</div>
 				<div class="ocp-actions">
 					${highlightAgain}
+					<button class="ocp-button ocp-highlight-stop" title="Stop highlight scrolling">Stop</button>
 					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
 				</div>
 			</div>
@@ -1689,6 +1704,10 @@
 		addTapHandler(panel.querySelector(".ocp-highlight-again"), (event) => {
 			event.stopPropagation();
 			queueHighlightRecommendation(state.lastHighlightRecommendation);
+		});
+		addTapHandler(panel.querySelector(".ocp-highlight-stop"), (event) => {
+			event.stopPropagation();
+			stopHighlightLock();
 		});
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
