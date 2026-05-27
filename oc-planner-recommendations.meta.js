@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.36
+// @version      0.2.37
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -17,5 +17,6 @@
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      backend.grusmedia.no
+// @connect      askelads.grusmedia.no
 // @noframes
 // ==/UserScript==

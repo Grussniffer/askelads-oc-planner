@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.36
+// @version      0.2.37
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -16,6 +16,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
+// @connect      backend.grusmedia.no
 // @connect      askelads.grusmedia.no
 // @noframes
 // ==/UserScript==
@@ -29,10 +30,11 @@
 	 *
 	 * Examples:
 	 *   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	 *   const BACKEND_BASE_URL = "http://localhost:3000";
+	 *   const BACKEND_BASE_URL = "http://localhost:3200";
 	 */
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.36";
+	const DEFAULT_FACTION_ID = "41309";
+	const SCRIPT_VERSION = "0.2.37";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -661,9 +663,10 @@
 		return profile;
 	};
 
-	const getLatestPlanner = async () => {
+	const getLatestPlanner = async (factionId) => {
+		const encodedFactionId = encodeURIComponent(String(factionId || DEFAULT_FACTION_ID));
 		const payload = await requestJson({
-			url: getBackendApiUrl(`/api/oc-planner/bot-alerts?timestamp=${Date.now()}`),
+			url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
 			label: "OC Planner snapshot request",
 		});
 		if (!payload?.planner) {
@@ -678,13 +681,15 @@
 		profile?.faction_id ||
 		"";
 
+	const getPlannerFactionId = (profile) => String(getProfileFactionId(profile) || DEFAULT_FACTION_ID).trim();
+
 	const recordScriptAccess = async (profile, planner) => {
 		const playerId = Number(profile?.player_id || 0);
 		if (!playerId) return;
 		try {
 			await requestJson({
 				method: "POST",
-				url: getBackendApiUrl("/api/oc-planner/script-access"),
+				url: getBackendApiUrl(`/api/v1/factions/${encodeURIComponent(getPlannerFactionId(profile))}/oc-planner/script-access`),
 				headers: { "Content-Type": "application/json" },
 				data: JSON.stringify({
 					playerId,
@@ -1480,7 +1485,7 @@
 			state.progress = "Loading latest OC planner snapshot...";
 			render();
 
-			const planner = await getLatestPlanner();
+			const planner = await getLatestPlanner(getPlannerFactionId(state.profile));
 			await recordScriptAccess(state.profile, planner);
 
 			state.lastPlanner = planner;
