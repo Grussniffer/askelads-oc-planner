@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.35
+// @version      0.2.36
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -28,11 +28,11 @@
 	 * Players should only need to enter their Torn API key in the panel.
 	 *
 	 * Examples:
-	 *   const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
+	 *   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	 *   const BACKEND_BASE_URL = "http://localhost:3000";
 	 */
-	const BACKEND_BASE_URL = "https://askelads.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.35";
+	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
+	const SCRIPT_VERSION = "0.2.36";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
