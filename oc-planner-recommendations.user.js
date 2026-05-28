@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.37
+// @version      0.2.38
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -34,7 +34,7 @@
 	 */
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.37";
+	const SCRIPT_VERSION = "0.2.38";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -686,24 +686,42 @@
 	const recordScriptAccess = async (profile, planner) => {
 		const playerId = Number(profile?.player_id || 0);
 		if (!playerId) return;
+		const factionId = getPlannerFactionId(profile);
+		const payload = {
+			playerId,
+			name: profile?.name || "",
+			factionId: getProfileFactionId(profile),
+			scriptVersion: SCRIPT_VERSION,
+			plannerGeneratedAt: planner?.generatedAt,
+			plannerRunId: planner?.id,
+		};
 		try {
 			await requestJson({
 				method: "POST",
-				url: getBackendApiUrl(`/api/v1/factions/${encodeURIComponent(getPlannerFactionId(profile))}/oc-planner/script-access`),
+				url: getBackendApiUrl(`/api/v1/factions/${encodeURIComponent(factionId)}/oc-planner/script-access`),
 				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify({
-					playerId,
-					name: profile?.name || "",
-					factionId: getProfileFactionId(profile),
-					scriptVersion: SCRIPT_VERSION,
-					plannerGeneratedAt: planner?.generatedAt,
-					plannerRunId: planner?.id,
-				}),
+				data: JSON.stringify(payload),
 				label: "OC Planner access check-in",
 				timeout: 4000,
 			});
 		} catch (error) {
-			console.warn("OC Planner access check-in failed:", error?.message || error);
+			try {
+				const params = new URLSearchParams();
+				for (const [key, value] of Object.entries(payload)) {
+					if (value === undefined || value === null || value === "") continue;
+					params.set(key, String(value));
+				}
+				await requestJson({
+					url: getBackendApiUrl(`/api/v1/factions/${encodeURIComponent(factionId)}/oc-planner/script-access?${params.toString()}`),
+					label: "OC Planner access check-in fallback",
+					timeout: 4000,
+				});
+			} catch (fallbackError) {
+				console.warn(
+					"OC Planner access check-in failed:",
+					fallbackError?.message || error?.message || fallbackError || error
+				);
+			}
 		}
 	};
 
