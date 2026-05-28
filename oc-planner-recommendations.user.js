@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.40
+// @version      0.2.41
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -34,7 +34,7 @@
 	 */
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.40";
+	const SCRIPT_VERSION = "0.2.41";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -233,12 +233,17 @@
 		}
 		#${PANEL_ID} .ocp-toolbar-status {
 			min-width: 0;
-			color: #b7ad9e;
+			border: 1px solid #4a3718;
+			background: rgba(12, 11, 9, 0.78);
+			color: #d9caa9;
+			border-radius: 6px;
+			padding: 3px 5px;
 			font-size: 11px;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
 			text-align: right;
+			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
 		}
 		#${PANEL_ID} .ocp-row input {
 			min-width: 0;
