@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.42
+// @version      0.2.43
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.42";
+	const SCRIPT_VERSION = "0.2.43";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -331,9 +331,15 @@
 			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset;
 		}
 		#${PANEL_ID} .ocp-plan-box.ocp-card-link {
-			display: flex;
+			display: block;
 			margin-top: 4px;
 			border-radius: 7px;
+		}
+		#${PANEL_ID} .ocp-next-head {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 5px;
 		}
 		#${PANEL_ID} .ocp-card-link:hover {
 			filter: brightness(1.1);
@@ -442,6 +448,7 @@
 			color: #9c8f7c;
 		}
 		#${PANEL_ID} .ocp-team {
+			display: block;
 			margin-top: 5px;
 		}
 		#${PANEL_ID} .ocp-team-title {
@@ -1716,11 +1723,13 @@
 					<span class="ocp-line-value">${escapeHtml(currentOcLabel(recommendation))}</span>
 				</div>
 				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
-					<span class="ocp-next-main">Next OC: ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
-					${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
+					<span class="ocp-next-head">
+						<span class="ocp-next-main">Next OC: ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+						${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
+					</span>
+					${miniMeta ? `<span class="ocp-mini-meta">${miniMeta}</span>` : ""}
+					${expectedTeam ? `<span class="ocp-team" title="Planner snapshot lineup, including joined members when the snapshot has them."><span class="ocp-team-title">Planner lineup</span><span class="ocp-team-chips">${expectedTeam}</span></span>` : ""}
 				</a>
-				${miniMeta ? `<div class="ocp-mini-meta">${miniMeta}</div>` : ""}
-				${expectedTeam ? `<div class="ocp-team" title="Planner snapshot lineup, including joined members when the snapshot has them."><div class="ocp-team-title">Planner lineup</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
 			</div>
 		`;
 	};
