@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.39
+// @version      0.2.40
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -34,7 +34,7 @@
 	 */
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.39";
+	const SCRIPT_VERSION = "0.2.40";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -295,6 +295,28 @@
 			border-color: #618f50;
 			background: linear-gradient(180deg, rgba(23, 48, 24, 0.86), rgba(14, 27, 15, 0.86));
 		}
+		#${PANEL_ID} .ocp-card.plan {
+			padding: 0;
+			border: 0;
+			background: transparent;
+		}
+		#${PANEL_ID} .ocp-card.plan.next {
+			background: transparent;
+		}
+		#${PANEL_ID} .ocp-plan-box {
+			margin-top: 4px;
+			padding: 5px 6px;
+			border: 1px solid #443319;
+			background: rgba(18, 15, 11, 0.78);
+			border-radius: 7px;
+		}
+		#${PANEL_ID} .ocp-plan-box.current {
+			background: rgba(12, 12, 11, 0.76);
+		}
+		#${PANEL_ID} .ocp-plan-box.next {
+			border-color: #618f50;
+			background: linear-gradient(180deg, rgba(23, 48, 24, 0.86), rgba(14, 27, 15, 0.86));
+		}
 		#${PANEL_ID} .ocp-card-link {
 			display: inline-flex;
 			align-items: center;
@@ -310,6 +332,11 @@
 			font-weight: 700;
 			border-radius: 6px;
 			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+		}
+		#${PANEL_ID} .ocp-plan-box.ocp-card-link {
+			display: flex;
+			margin-top: 4px;
+			border-radius: 7px;
 		}
 		#${PANEL_ID} .ocp-card-link:hover {
 			filter: brightness(1.1);
@@ -1686,12 +1713,12 @@
 			.join("");
 
 		return `
-			<div class="ocp-card ${isNext ? "next" : ""}">
-				<div class="ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
+			<div class="ocp-card plan ${isNext ? "next" : ""}">
+				<div class="ocp-plan-box current ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
 					<span class="ocp-line-label">Current</span>
 					<span class="ocp-line-value">${escapeHtml(currentOcLabel(recommendation))}</span>
 				</div>
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
+				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
 					<span class="ocp-next-main">Next OC: ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
 					${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
 				</a>
