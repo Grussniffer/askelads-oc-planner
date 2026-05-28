@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.38
+// @version      0.2.39
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -34,7 +34,7 @@
 	 */
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.38";
+	const SCRIPT_VERSION = "0.2.39";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -112,7 +112,7 @@
 			right: 14px;
 			bottom: 54px;
 			z-index: 999999;
-			width: min(340px, calc(100vw - 28px));
+			width: min(318px, calc(100vw - 28px));
 			max-height: calc(100vh - 28px);
 			font: 12px/1.35 Arial, Helvetica, sans-serif;
 			color: #f1e8d7;
@@ -139,7 +139,7 @@
 			align-items: center;
 			justify-content: space-between;
 			gap: 6px;
-			padding: 7px 8px;
+			padding: 6px 7px;
 			background: linear-gradient(180deg, rgba(35, 25, 14, 0.96), rgba(14, 11, 8, 0.96));
 			border-bottom: 1px solid #5c4318;
 			cursor: pointer;
@@ -153,6 +153,10 @@
 			transition: none;
 		}
 		#${PANEL_ID} .ocp-title {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 			font-weight: 700;
 			font-size: 14px;
 			letter-spacing: 0;
@@ -165,12 +169,12 @@
 			gap: 6px;
 		}
 		#${PANEL_ID} .ocp-highlight-again {
-			padding: 4px 6px;
+			padding: 3px 5px;
 			font-weight: 700;
 			line-height: 1;
 		}
 		#${PANEL_ID} .ocp-highlight-stop {
-			padding: 4px 6px;
+			padding: 3px 5px;
 			font-weight: 700;
 			line-height: 1;
 		}
@@ -179,7 +183,7 @@
 			border: 1px solid #4d5860;
 			background: linear-gradient(180deg, #2c3338, #171b1f);
 			color: #f3f0e8;
-			border-radius: 8px;
+			border-radius: 6px;
 			cursor: pointer;
 			font-weight: 700;
 			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset;
@@ -193,7 +197,7 @@
 			padding: 0;
 		}
 		#${PANEL_ID} .ocp-button {
-			padding: 5px 7px;
+			padding: 4px 6px;
 		}
 		#${PANEL_ID} .ocp-icon-button:hover,
 		#${PANEL_ID} .ocp-button:hover {
@@ -210,7 +214,7 @@
 			color: #ffe5e5;
 		}
 		#${PANEL_ID} .ocp-body {
-			padding: 8px;
+			padding: 6px;
 			max-height: calc(100vh - 64px);
 			overflow-y: auto;
 			overscroll-behavior: contain;
@@ -218,7 +222,23 @@
 		#${PANEL_ID} .ocp-row {
 			display: flex;
 			gap: 5px;
-			margin-top: 6px;
+			margin-top: 5px;
+		}
+		#${PANEL_ID} .ocp-toolbar {
+			display: grid;
+			grid-template-columns: auto auto minmax(0, 1fr);
+			align-items: center;
+			gap: 4px;
+			margin-top: 0;
+		}
+		#${PANEL_ID} .ocp-toolbar-status {
+			min-width: 0;
+			color: #b7ad9e;
+			font-size: 11px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			text-align: right;
 		}
 		#${PANEL_ID} .ocp-row input {
 			min-width: 0;
@@ -265,8 +285,8 @@
 			font-size: 11px;
 		}
 		#${PANEL_ID} .ocp-card {
-			margin-top: 7px;
-			padding: 7px;
+			margin-top: 5px;
+			padding: 6px;
 			border: 1px solid #443319;
 			background: rgba(18, 15, 11, 0.78);
 			border-radius: 8px;
@@ -278,13 +298,14 @@
 		#${PANEL_ID} .ocp-card-link {
 			display: inline-flex;
 			align-items: center;
-			justify-content: center;
-			margin-top: 6px;
+			justify-content: space-between;
+			gap: 5px;
+			margin-top: 4px;
 			width: 100%;
 			border: 1px solid #65a25d;
 			background: linear-gradient(180deg, #315d35, #17361e);
 			color: #f2fff1;
-			padding: 6px 7px;
+			padding: 5px 6px;
 			text-decoration: none;
 			font-weight: 700;
 			border-radius: 6px;
@@ -292,6 +313,45 @@
 		}
 		#${PANEL_ID} .ocp-card-link:hover {
 			filter: brightness(1.1);
+		}
+		#${PANEL_ID} .ocp-compact-line {
+			display: grid;
+			grid-template-columns: 54px minmax(0, 1fr);
+			align-items: baseline;
+			gap: 6px;
+			margin-top: 2px;
+		}
+		#${PANEL_ID} .ocp-line-label {
+			color: #b7ad9e;
+			font-weight: 700;
+			font-size: 11px;
+			text-transform: uppercase;
+		}
+		#${PANEL_ID} .ocp-line-value {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		#${PANEL_ID} .ocp-next-main {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		#${PANEL_ID} .ocp-next-meta {
+			flex: 0 0 auto;
+			color: #d8f4cf;
+			font-size: 11px;
+			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-mini-meta {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 3px 7px;
+			margin-top: 4px;
+			color: #b7ad9e;
+			font-size: 11px;
 		}
 		.askeladds-oc-planner-highlight {
 			outline: 3px solid #82d173 !important;
@@ -358,28 +418,27 @@
 			color: #9c8f7c;
 		}
 		#${PANEL_ID} .ocp-team {
-			margin-top: 6px;
-			border-top: 1px solid #403018;
-			padding-top: 5px;
+			margin-top: 5px;
 		}
 		#${PANEL_ID} .ocp-team-title {
+			display: none;
 			color: #b7ad9e;
 			font-weight: 700;
 			margin-bottom: 3px;
 		}
 		#${PANEL_ID} .ocp-team-chips {
-			display: flex;
-			flex-wrap: wrap;
-			gap: 4px;
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 3px;
 		}
 		#${PANEL_ID} .ocp-team-chip {
-			display: inline-flex;
-			gap: 3px;
-			max-width: 100%;
+			display: block;
+			min-width: 0;
 			border: 1px solid #42321a;
 			background: rgba(9, 10, 10, 0.72);
 			border-radius: 5px;
-			padding: 2px 5px;
+			padding: 2px 4px;
+			overflow: hidden;
 		}
 		#${PANEL_ID} .ocp-team-chip.you {
 			border-color: #69a45d;
@@ -393,12 +452,20 @@
 			background: rgba(60, 39, 8, 0.78);
 		}
 		#${PANEL_ID} .ocp-chip-slot {
+			display: block;
 			color: #b7ad9e;
-			flex: 0 0 auto;
+			font-size: 10px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 		#${PANEL_ID} .ocp-chip-member {
+			display: block;
 			color: #f1e8d7;
-			overflow-wrap: anywhere;
+			font-size: 11px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 		#${PANEL_ID} .ocp-team-chip.you .ocp-chip-member {
 			color: #baf0ad;
@@ -471,6 +538,9 @@
 				gap: 5px;
 				margin-top: 6px;
 			}
+			#${PANEL_ID} .ocp-toolbar {
+				grid-template-columns: auto auto minmax(0, 1fr);
+			}
 			#${PANEL_ID} .ocp-button {
 				padding: 6px 7px;
 			}
@@ -480,6 +550,9 @@
 			#${PANEL_ID} .ocp-card {
 				margin-top: 7px;
 				padding: 7px;
+			}
+			#${PANEL_ID} .ocp-team-chips {
+				grid-template-columns: repeat(2, minmax(0, 1fr));
 			}
 			#${PANEL_ID} .ocp-grid {
 				grid-template-columns: 1fr;
@@ -1551,6 +1624,27 @@
 		return markup ? `<div class="ocp-stat-row">${markup}</div>` : "";
 	};
 
+	const compactCrimeLabel = (name, id) => {
+		const crimeName = name || "Organized crime";
+		return id ? `${crimeName} #${id}` : crimeName;
+	};
+
+	const currentOcLabel = (recommendation) => {
+		if (recommendation.currentCrimeName) {
+			const current = compactCrimeLabel(
+				recommendation.currentCrimeName,
+				recommendation.currentCrimeId
+			);
+			return recommendation.availableAt
+				? `${current} - free ${formatTimestamp(recommendation.availableAt)}`
+				: current;
+		}
+		if (recommendation.availableAt && recommendation.availableAt > Math.floor(Date.now() / 1000)) {
+			return `Free ${formatTimestamp(recommendation.availableAt)}`;
+		}
+		return "Free now";
+	};
+
 	const recommendationCard = (recommendation, index) => {
 		const isNext = recommendation.planningState === "next" || index === 0;
 		const crimeUrl = getCrimeUrl(recommendation.crimeId);
@@ -1575,26 +1669,34 @@
 				`
 			)
 			.join("");
+		const nextMeta = [
+			step ? `Step #${step}` : "",
+			recommendation.difficulty ? `T${recommendation.difficulty}` : "",
+		]
+			.filter(Boolean)
+			.join(" / ");
+		const miniMeta = [
+			`Start ${startLabel}`,
+			finishLabel ? `Finish ${finishLabel}` : "",
+			recommendation.cpr ? `${Math.round(Number(recommendation.cpr || 0))}% CPR` : "",
+			successChance ? `${successChance} success` : "",
+		]
+			.filter(Boolean)
+			.map((item) => `<span>${escapeHtml(item)}</span>`)
+			.join("");
 
 		return `
 			<div class="ocp-card ${isNext ? "next" : ""}">
-				<div class="ocp-card-heading">
-					<span class="ocp-card-title">${escapeHtml(isNext ? "Join Next" : "Queued")}</span>
-					<span>${escapeHtml(recommendation.crimeName || "Organized crime")}</span>
-					<span class="ocp-muted">${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+				<div class="ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
+					<span class="ocp-line-label">Current</span>
+					<span class="ocp-line-value">${escapeHtml(currentOcLabel(recommendation))}</span>
 				</div>
-				${statRow(statItem("Start", startLabel), statItem("Finish", finishLabel))}
-				${statRow(
-					statItem("CPR", `${Math.round(Number(recommendation.cpr || 0))}%`),
-					statItem("Success", successChance),
-					statItem("Tier", recommendation.difficulty ? `T${recommendation.difficulty}` : "")
-				)}
-				${statRow(
-					statItem("Done", recommendation.currentCrimeName),
-					statItem("Step", step ? `#${step}` : "")
-				)}
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
+					<span class="ocp-next-main">Next OC: ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+					${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
+				</a>
+				${miniMeta ? `<div class="ocp-mini-meta">${miniMeta}</div>` : ""}
 				${expectedTeam ? `<div class="ocp-team" title="Planner snapshot lineup, including joined members when the snapshot has them."><div class="ocp-team-title">Planner lineup</div><div class="ocp-team-chips">${expectedTeam}</div></div>` : ""}
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">Go to OC #${escapeHtml(recommendation.crimeId)}</a>
 			</div>
 		`;
 	};
@@ -1617,10 +1719,6 @@
 		if (!payload) return "";
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
-		const plannerAge = formatAge(payload.plannerGeneratedAt);
-		const plannerPill = plannerAge
-			? `<span class="ocp-pill">${escapeHtml(`Planner ${plannerAge}`)}</span>`
-			: "";
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
@@ -1632,16 +1730,20 @@
 			: "";
 
 		return `
-			<div class="ocp-status-line">
-				<span>${escapeHtml(payload.memberName || "You")}</span>
-				${plannerPill}
-				${payload.plannerGeneratedAt ? `<span class="ocp-muted">${escapeHtml(formatTimestamp(payload.plannerGeneratedAt))}</span>` : ""}
-			</div>
 			${cards}
 			${unassigned}
 			${missingCpr}
 			${empty}
 		`;
+	};
+
+	const plannerStatusText = () => {
+		if (state.progress) return state.progress;
+		const payload = state.lastPayload;
+		if (!payload?.plannerGeneratedAt) return state.loading ? "Loading..." : "";
+		const age = formatAge(payload.plannerGeneratedAt);
+		const generated = formatTimestamp(payload.plannerGeneratedAt);
+		return age ? `Planner ${age} - ${generated}` : generated;
 	};
 
 	const render = () => {
@@ -1662,14 +1764,20 @@
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
 		const collapsed = state.collapsed;
+		const headerName =
+			state.lastPayload?.memberName ||
+			state.profile?.name ||
+			"Askelads OC";
+		const statusText = plannerStatusText();
 		const highlightAgain = state.lastHighlightRecommendation
 			? `<button class="ocp-button ocp-highlight-again" title="Highlight recommendation again">HL</button>`
 			: "";
 		const keyControls = savedKey
 			? `
-				<div class="ocp-row">
+				<div class="ocp-row ocp-toolbar">
 					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
 					<button class="ocp-button danger ocp-forget">Change key</button>
+					<span class="ocp-toolbar-status" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
 				</div>
 			`
 			: `
@@ -1682,7 +1790,7 @@
 
 		const markup = `
 			<div class="ocp-header">
-				<div class="ocp-title">Askelads OC</div>
+				<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
 				<div class="ocp-actions">
 					${highlightAgain}
 					<button class="ocp-button ocp-highlight-stop" title="Stop highlight scrolling">Stop</button>
@@ -1692,7 +1800,7 @@
 			<div class="ocp-body">
 				${backendConfigured ? "" : `<div class="ocp-error">Set BACKEND_BASE_URL in the userscript before using it.</div>`}
 				${keyControls}
-				${state.progress ? `<div class="ocp-status">${escapeHtml(state.progress)}</div>` : ""}
+				${!savedKey && state.progress ? `<div class="ocp-status">${escapeHtml(state.progress)}</div>` : ""}
 				${state.error ? `<div class="ocp-error">${escapeHtml(state.error)}</div>` : ""}
 				${renderResults()}
 				<details class="ocp-disclosure"${state.disclosureOpen ? " open" : ""}>
