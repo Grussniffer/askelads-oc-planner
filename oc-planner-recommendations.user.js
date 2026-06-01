@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.43
+// @version      0.2.44
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.43";
+	const SCRIPT_VERSION = "0.2.44";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -346,7 +346,7 @@
 		}
 		#${PANEL_ID} .ocp-compact-line {
 			display: grid;
-			grid-template-columns: 54px minmax(0, 1fr);
+			grid-template-columns: 64px minmax(0, 1fr);
 			align-items: baseline;
 			gap: 6px;
 			margin-top: 2px;
@@ -1248,7 +1248,7 @@
 			});
 			state.highlightObserver.observe(document.body, { childList: true, subtree: true });
 		}
-		[150, 400, 800, 1300, 2000, 3000, 4500, 6500, 9000, 12000, 16000].forEach((delay) => {
+		[0, 100, 250, 500, 900, 1400, 2200, 3200, 4800, 7000, 10000, 14000, 19000, 24000].forEach((delay) => {
 			window.setTimeout(() => retryPendingHighlight(), delay);
 		});
 	};
@@ -1257,11 +1257,11 @@
 		const pending = state.pendingHighlight;
 		if (!pending) return;
 		const roleFound = highlightRecommendation(pending.recommendation);
-		if (roleFound) {
+		if (roleFound && Date.now() - pending.startedAt > 2800) {
 			stopHighlightLock(false);
 			return;
 		}
-		if (Date.now() - pending.startedAt > 17000) {
+		if (Date.now() - pending.startedAt > 25000) {
 			stopHighlightLock(false);
 		}
 	};
@@ -1676,9 +1676,27 @@
 		return "Free now";
 	};
 
+	const currentStepTitle = (recommendation) => {
+		if (recommendation?.currentCrimeName) return "Finish current OC";
+		if (recommendation?.availableAt && recommendation.availableAt > Math.floor(Date.now() / 1000)) {
+			return "Wait until free";
+		}
+		return "Ready now";
+	};
+
+	const currentStepCard = (recommendation) => {
+		if (!recommendation) return "";
+		return `
+			<div class="ocp-plan-box current ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
+				<span class="ocp-line-label">Step #1</span>
+				<span class="ocp-line-value">${escapeHtml(currentStepTitle(recommendation))} - ${escapeHtml(currentOcLabel(recommendation))}</span>
+			</div>
+		`;
+	};
+
 	const recommendationCard = (recommendation, index) => {
-		const isNext = recommendation.planningState === "next" || index === 0;
 		const crimeUrl = getCrimeUrl(recommendation.crimeId);
+		const stepNumber = index + 2;
 		const startLabel =
 			recommendation.plannedStartAt && recommendation.plannedStartAt > Math.floor(Date.now() / 1000)
 				? `${formatRelative(recommendation.plannedStartAt)} (${formatTimestamp(recommendation.plannedStartAt)})`
@@ -1701,7 +1719,7 @@
 			)
 			.join("");
 		const nextMeta = [
-			step ? `Step #${step}` : "",
+			step ? `Planner step #${step}` : "",
 			recommendation.difficulty ? `T${recommendation.difficulty}` : "",
 		]
 			.filter(Boolean)
@@ -1717,14 +1735,10 @@
 			.join("");
 
 		return `
-			<div class="ocp-card plan ${isNext ? "next" : ""}">
-				<div class="ocp-plan-box current ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
-					<span class="ocp-line-label">Current</span>
-					<span class="ocp-line-value">${escapeHtml(currentOcLabel(recommendation))}</span>
-				</div>
+			<div class="ocp-card plan next">
 				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
 					<span class="ocp-next-head">
-						<span class="ocp-next-main">Next OC: ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+						<span class="ocp-next-main">Step #${stepNumber}: Join ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
 						${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
 					</span>
 					${miniMeta ? `<span class="ocp-mini-meta">${miniMeta}</span>` : ""}
@@ -1752,6 +1766,7 @@
 		if (!payload) return "";
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
+		const current = payload.recommendations.length ? currentStepCard(payload.recommendations[0]) : "";
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
@@ -1763,6 +1778,7 @@
 			: "";
 
 		return `
+			${current}
 			${cards}
 			${unassigned}
 			${missingCpr}
