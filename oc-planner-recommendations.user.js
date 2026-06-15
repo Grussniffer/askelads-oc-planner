@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.44
+// @version      0.2.45
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.44";
+	const SCRIPT_VERSION = "0.2.45";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -1466,6 +1466,77 @@
 			(member) => Number(member.memberId) === memberId
 		);
 
+	const getSlotCprBand = (slot) => {
+		const min = Number(slot?.minimumRecommendedCpr || 0);
+		const max = Number(slot?.maximumRecommendedCpr || 100);
+		return {
+			min: Number.isFinite(min) ? min : 0,
+			max: Number.isFinite(max) && max > 0 ? max : 100,
+		};
+	};
+
+	const formatCprBand = (slot) => {
+		const { min, max } = getSlotCprBand(slot);
+		return max < 100 ? `${Math.round(min)}-${Math.round(max)}% CPR` : `${Math.round(min)}%+ CPR`;
+	};
+
+	const getMemberCprForSlot = (planner, memberId, crime, slot) => {
+		const member = (planner?.members || []).find(
+			(item) =>
+				Number(item?.memberId || item?.playerId || item?.player_id || item?.id || 0) ===
+				Number(memberId)
+		);
+		const crimes = member?.crimes || {};
+		const crimeName = crime?.name || slot?.crimeName || slot?.recommended?.cprCrimeName || "";
+		const roleName = slot?.role || slot?.recommended?.cprRoleName || slot?.position || "";
+		const crimeEntry = Object.entries(crimes).find(
+			([name]) => normalizeText(name) === normalizeText(crimeName)
+		);
+		if (!crimeEntry || !crimeEntry[1] || typeof crimeEntry[1] !== "object") return 0;
+		const roleEntry = Object.entries(crimeEntry[1]).find(
+			([name]) => normalizeText(name) === normalizeText(roleName)
+		);
+		const cpr = Number(roleEntry?.[1] || 0);
+		return Number.isFinite(cpr) ? cpr : 0;
+	};
+
+	const memberFitsSlotBand = (cpr, slot) => {
+		const { min, max } = getSlotCprBand(slot);
+		return cpr >= min && cpr <= max;
+	};
+
+	const findFlexibleSlots = (planner, memberId, recommendations, unassigned) => {
+		if (recommendations.length) return [];
+		if (!unassigned.some((member) => member.available === "now")) return [];
+
+		const flexibleSlots = [];
+		for (const crime of planner?.crimes || []) {
+			for (const slot of crime.slots || []) {
+				if (!slot?.recommended?.anyFree || slot.currentUserId || slot.currentUserName) continue;
+				const cpr = getMemberCprForSlot(planner, memberId, crime, slot);
+				if (!memberFitsSlotBand(cpr, slot)) continue;
+				flexibleSlots.push({
+					crimeId: crime.id || slot.crimeId,
+					crimeName: crime.name || slot.crimeName || slot.recommended.cprCrimeName,
+					difficulty: crime.difficulty,
+					position: slot.position,
+					role: slot.role || slot.recommended.cprRoleName,
+					roleImpactLabel: slot.roleImpactLabel,
+					cpr,
+					cprBand: formatCprBand(slot),
+					successChance: crime.recommendedSuccessChance,
+				});
+			}
+		}
+
+		return flexibleSlots.sort(
+			(a, b) =>
+				(a.difficulty || 0) - (b.difficulty || 0) ||
+				String(a.crimeName || "").localeCompare(String(b.crimeName || "")) ||
+				String(a.position || "").localeCompare(String(b.position || ""))
+		);
+	};
+
 	const buildMemberPayload = (profile, planner) => {
 		const memberId = Number(profile?.player_id || profile?.profile?.player_id || 0);
 		const memberName =
@@ -1477,6 +1548,7 @@
 		const recommendations = findSlotRecommendations(planner, memberId);
 		const planningSteps = findPlanningSteps(planner, memberId);
 		const unassigned = findUnassigned(planner, memberId);
+		const flexibleSlots = findFlexibleSlots(planner, memberId, recommendations, unassigned);
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
@@ -1489,6 +1561,7 @@
 			recommendations,
 			planningSteps,
 			unassigned,
+			flexibleSlots,
 			missingCpr,
 			warnings: planner?.warnings || [],
 		};
@@ -1748,6 +1821,33 @@
 		`;
 	};
 
+	const flexibleSlotCard = (slot) => {
+		const crimeUrl = getCrimeUrl(slot.crimeId);
+		const successChance = formatChance(slot.successChance);
+		const meta = [
+			slot.difficulty ? `T${slot.difficulty}` : "",
+			slot.cpr ? `${Math.round(Number(slot.cpr || 0))}% CPR` : "",
+			slot.cprBand ? `needs ${slot.cprBand}` : "",
+			successChance ? `${successChance} success` : "",
+		]
+			.filter(Boolean)
+			.map((item) => `<span>${escapeHtml(item)}</span>`)
+			.join("");
+
+		return `
+			<div class="ocp-card need-more">
+				<div class="ocp-card-heading">
+					<span class="ocp-card-title">Flexible Slot</span>
+					<span>${escapeHtml(compactCrimeLabel(slot.crimeName, slot.crimeId))}</span>
+					<span class="ocp-muted">${escapeHtml(slot.position || slot.role || "Slot")}</span>
+				</div>
+				${meta ? `<div class="ocp-mini-meta">${meta}</div>` : ""}
+				<div class="ocp-muted">Admin marked this as anyone free, and your CPR fits this role's configured band.</div>
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">Go to OC #${escapeHtml(slot.crimeId)}</a>
+			</div>
+		`;
+	};
+
 	const unassignedCard = (member) => `
 		<div class="ocp-card need-more">
 			<div class="ocp-card-title">No Slot Assigned</div>
@@ -1767,19 +1867,21 @@
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
 		const current = payload.recommendations.length ? currentStepCard(payload.recommendations[0]) : "";
+		const flexible = payload.flexibleSlots.map(flexibleSlotCard).join("");
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
 		const missingCpr = payload.missingCpr
 			? `<div class="ocp-card need-more"><div class="ocp-card-title">Missing CPR</div><div>Your CPR is missing from TornStats/Supabase, so the planner cannot place you yet.</div></div>`
 			: "";
-		const empty = !cards && !unassigned && !missingCpr
+		const empty = !cards && !flexible && !unassigned && !missingCpr
 			? `<div class="ocp-card"><div class="ocp-card-title">Nothing To Join</div><div>No personal OC recommendation was found in the latest planner run.</div></div>`
 			: "";
 
 		return `
 			${current}
 			${cards}
+			${flexible}
 			${unassigned}
 			${missingCpr}
 			${empty}
