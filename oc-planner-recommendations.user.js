@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.47
+// @version      0.2.48
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,13 +26,14 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.47";
+	const SCRIPT_VERSION = "0.2.48";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
 	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
 	const PANEL_ID = "askeladds-oc-planner-panel";
+	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
 	const PANEL_EDGE_GAP = 8;
@@ -387,6 +388,21 @@
 			outline: 3px solid #ffd166 !important;
 			box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.26), 0 0 18px rgba(255, 209, 102, 0.5) !important;
 		}
+		.${JOIN_CUE_BADGE_CLASS} {
+			display: inline-flex;
+			align-items: center;
+			max-width: min(240px, 55vw);
+			margin-left: 7px;
+			padding: 2px 6px;
+			border: 1px solid #b88725;
+			border-radius: 5px;
+			background: rgba(61, 42, 12, 0.94);
+			color: #ffe1a0;
+			font: 700 11px/1.2 Arial, Helvetica, sans-serif;
+			vertical-align: middle;
+			white-space: normal;
+			pointer-events: none;
+		}
 		#${PANEL_ID} .ocp-card.need-more {
 			border-color: #8d6c25;
 			background: rgba(49, 35, 10, 0.78);
@@ -538,6 +554,11 @@
 			font-weight: 700;
 		}
 		@media (max-width: 520px) {
+			.${JOIN_CUE_BADGE_CLASS} {
+				max-width: 52vw;
+				padding: 2px 5px;
+				font-size: 10px;
+			}
 			#${PANEL_ID} {
 				right: 8px;
 				bottom: 8px;
@@ -893,6 +914,7 @@
 
 	const removePanel = () => {
 		document.getElementById(PANEL_ID)?.remove();
+		clearRecommendationJoinCues();
 		lastRenderedMarkup = "";
 		state.highlightObserver?.disconnect();
 		state.highlightObserver = null;
@@ -1187,11 +1209,11 @@
 
 	const isInsidePanel = (element) => !!element?.closest?.(`#${PANEL_ID}`);
 
-	const findCrimeElement = (crimeId, recommendation) => {
+	const findCrimeElement = (crimeId, recommendation, requireActiveCrime = true) => {
 		const id = String(crimeId || "");
 		if (!id) return null;
 		const activeCrimeId = getCurrentPageCrimeId();
-		if (activeCrimeId && activeCrimeId !== id) return null;
+		if (requireActiveCrime && activeCrimeId && activeCrimeId !== id) return null;
 
 		const candidates = Array.from(
 			document.querySelectorAll(CRIME_ID_SELECTOR)
@@ -1247,6 +1269,101 @@
 		document
 			.querySelectorAll(".askeladds-oc-planner-role-highlight")
 			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
+	};
+
+	const clearRecommendationJoinCues = () => {
+		document
+			.querySelectorAll(`.${JOIN_CUE_BADGE_CLASS}`)
+			.forEach((element) => element.remove());
+	};
+
+	const getRecommendationJoinCue = (recommendations, index) => {
+		const recommendation = recommendations[index];
+		if (!recommendation) return "";
+		if (index === 0) {
+			if (recommendation.currentCrimeName) {
+				return `Join after ${recommendation.currentCrimeName}`;
+			}
+			if (
+				recommendation.availableAt &&
+				recommendation.availableAt > Math.floor(Date.now() / 1000)
+			) {
+				return "Join when free";
+			}
+			return "Join now";
+		}
+
+		const previous = recommendations[index - 1];
+		return `Join after ${previous?.crimeName || `OC #${previous?.crimeId || "?"}`}`;
+	};
+
+	const findCrimeTitleElement = (crimeElement, crimeName) => {
+		const target = normalizeText(crimeName);
+		if (!crimeElement || !target) return null;
+		return (
+			Array.from(
+				crimeElement.querySelectorAll(
+					"h1, h2, h3, h4, h5, h6, [class*='title'], [class*='Title'], [class*='name'], [class*='Name'], span"
+				)
+			)
+				.filter(
+					(element) =>
+						!isInsidePanel(element) &&
+						!element.classList.contains(JOIN_CUE_BADGE_CLASS) &&
+						normalizeText(element.textContent) === target
+				)
+				.sort((a, b) => a.children.length - b.children.length)[0] ||
+			null
+		);
+	};
+
+	const syncRecommendationJoinCues = () => {
+		const recommendations = state.lastPayload?.recommendations || [];
+		if (!state.active || !isOcCrimesPage() || !recommendations.length) {
+			clearRecommendationJoinCues();
+			return;
+		}
+
+		const desired = new Map();
+		recommendations.forEach((recommendation, index) => {
+			const crimeId = String(recommendation.crimeId || "");
+			if (!crimeId || desired.has(crimeId)) return;
+			desired.set(crimeId, {
+				recommendation,
+				label: getRecommendationJoinCue(recommendations, index),
+				step: index + 2,
+			});
+		});
+
+		const existingByCrimeId = new Map();
+		document.querySelectorAll(`.${JOIN_CUE_BADGE_CLASS}`).forEach((badge) => {
+			const crimeId = String(badge.dataset.ocpCrimeId || "");
+			const item = desired.get(crimeId);
+			if (!item || existingByCrimeId.has(crimeId)) {
+				badge.remove();
+				return;
+			}
+			badge.textContent = item.label;
+			badge.title = `Planner step #${item.step}: ${item.label}`;
+			existingByCrimeId.set(crimeId, badge);
+		});
+
+		for (const [crimeId, item] of desired) {
+			if (existingByCrimeId.has(crimeId)) continue;
+			const crimeElement = findCrimeElement(crimeId, item.recommendation, false);
+			const titleElement = findCrimeTitleElement(
+				crimeElement,
+				item.recommendation.crimeName
+			);
+			if (!titleElement) continue;
+
+			const badge = document.createElement("span");
+			badge.className = JOIN_CUE_BADGE_CLASS;
+			badge.dataset.ocpCrimeId = crimeId;
+			badge.textContent = item.label;
+			badge.title = `Planner step #${item.step}: ${item.label}`;
+			titleElement.appendChild(badge);
+		}
 	};
 
 	const stopHighlightLock = (clearHighlights = true) => {
@@ -2012,7 +2129,10 @@
 			</div>
 		`;
 
-		if (markup === lastRenderedMarkup) return;
+		if (markup === lastRenderedMarkup) {
+			syncRecommendationJoinCues();
+			return;
+		}
 		panel.innerHTML = markup;
 		lastRenderedMarkup = markup;
 		panel.classList.toggle("collapsed", state.collapsed);
@@ -2074,6 +2194,7 @@
 		panel.querySelector(".ocp-api-key")?.addEventListener("keydown", (event) => {
 			if (event.key === "Enter") refreshRecommendations(false);
 		});
+		window.setTimeout(syncRecommendationJoinCues, 0);
 	};
 
 	const start = () => {
@@ -2114,7 +2235,10 @@
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
 	window.addEventListener("resize", applyStoredPanelPosition);
-	window.setInterval(syncPageActivation, 1500);
+	window.setInterval(() => {
+		syncPageActivation();
+		syncRecommendationJoinCues();
+	}, 1500);
 
 	if (document.readyState === "loading") {
 		document.addEventListener("DOMContentLoaded", start, { once: true });
