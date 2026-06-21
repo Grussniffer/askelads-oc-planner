@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.46
+// @version      0.2.47
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.46";
+	const SCRIPT_VERSION = "0.2.47";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -382,10 +382,6 @@
 			margin-top: 4px;
 			color: #b7ad9e;
 			font-size: 11px;
-		}
-		.askeladds-oc-planner-highlight {
-			outline: 3px solid #82d173 !important;
-			box-shadow: 0 0 0 3px rgba(130, 209, 115, 0.28), 0 0 18px rgba(130, 209, 115, 0.55) !important;
 		}
 		.askeladds-oc-planner-role-highlight {
 			outline: 3px solid #ffd166 !important;
@@ -1166,11 +1162,18 @@
 		return new Set(candidates.map(getElementCrimeId).filter(Boolean));
 	};
 
-	const getCrimeContainer = (element, crimeId) => {
+	const getCrimeContainer = (element, crimeId, recommendation) => {
 		const id = String(crimeId || "");
 		let current = element;
 		while (current && current !== document.body && current !== document.documentElement) {
-			if (current.querySelector?.(ROLE_TITLE_SELECTOR) && getCrimeIdsWithin(current).has(id)) {
+			const crimeIds = getCrimeIdsWithin(current);
+			const roleElement = findExactRoleTitleElement(current, recommendation);
+			if (
+				crimeIds.size === 1 &&
+				crimeIds.has(id) &&
+				roleElement &&
+				(roleElement === current || current.contains(roleElement))
+			) {
 				return current;
 			}
 			current = current.parentElement;
@@ -1184,7 +1187,7 @@
 
 	const isInsidePanel = (element) => !!element?.closest?.(`#${PANEL_ID}`);
 
-	const findCrimeElement = (crimeId) => {
+	const findCrimeElement = (crimeId, recommendation) => {
 		const id = String(crimeId || "");
 		if (!id) return null;
 		const activeCrimeId = getCurrentPageCrimeId();
@@ -1195,7 +1198,7 @@
 		).filter((element) => !isInsidePanel(element) && getElementCrimeId(element) === id);
 		const seen = new Set();
 		const containers = candidates
-			.map((element) => getCrimeContainer(element, id))
+			.map((element) => getCrimeContainer(element, id, recommendation))
 			.filter((element) => {
 				if (!element || seen.has(element)) return false;
 				seen.add(element);
@@ -1263,12 +1266,10 @@
 		if (!id) return;
 		clearRecommendationHighlights();
 
-		const crimeElement = findCrimeElement(id);
-		crimeElement?.classList.add("askeladds-oc-planner-highlight");
-
+		const crimeElement = findCrimeElement(id, recommendation);
 		const roleElement = findRoleElement(crimeElement, recommendation);
 		roleElement?.classList.add("askeladds-oc-planner-role-highlight");
-		(roleElement || crimeElement)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+		roleElement?.scrollIntoView?.({ behavior: "smooth", block: "center" });
 		return !!roleElement;
 	};
 
