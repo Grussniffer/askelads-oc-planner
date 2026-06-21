@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.45
+// @version      0.2.46
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.45";
+	const SCRIPT_VERSION = "0.2.46";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -1047,12 +1047,15 @@
 			.toLowerCase()
 			.replace(/\s+/g, " ")
 			.trim();
+	const ROLE_TITLE_SELECTOR =
+		"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']";
+	const CRIME_ID_SELECTOR =
+		"a[href], button, [data-crime-id], [data-crimeid], [data-oc-id], [data-id]";
 
 	const getRoleTerms = (recommendation) =>
 		[
 			recommendation?.position,
 			recommendation?.role,
-			recommendation?.roleImpactLabel,
 		]
 			.map(normalizeText)
 			.filter(Boolean);
@@ -1080,9 +1083,7 @@
 		const root = scope || document;
 		const seenWrappers = new Set();
 		const entries = Array.from(
-			root.querySelectorAll(
-				"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']"
-			)
+			root.querySelectorAll(ROLE_TITLE_SELECTOR)
 		)
 			.filter((element) => !isInsidePanel(element))
 			.map((element) => ({
@@ -1143,42 +1144,80 @@
 		return dataId && /\b(oc|crime|organized)\b/.test(elementContext) ? dataId : "";
 	};
 
-	const getCrimeContainer = (element) =>
-		element?.closest(
-			"li, tr, [data-crime-id], [data-crimeid], [class*='crime'], [class*='Crime'], [class*='card'], [class*='row']"
-		) || element;
+	const getCurrentPageCrimeId = () => {
+		try {
+			const parsed = new URL(window.location.href);
+			const hashParams = new URLSearchParams(parsed.hash.replace(/^#\/?/, ""));
+			return String(
+				parsed.searchParams.get("crimeId") ||
+					parsed.searchParams.get("crimeID") ||
+					hashParams.get("crimeId") ||
+					hashParams.get("crimeID") ||
+					""
+			);
+		} catch {
+			return "";
+		}
+	};
+
+	const getCrimeIdsWithin = (element) => {
+		if (!element) return new Set();
+		const candidates = [element, ...element.querySelectorAll(CRIME_ID_SELECTOR)];
+		return new Set(candidates.map(getElementCrimeId).filter(Boolean));
+	};
+
+	const getCrimeContainer = (element, crimeId) => {
+		const id = String(crimeId || "");
+		let current = element;
+		while (current && current !== document.body && current !== document.documentElement) {
+			if (current.querySelector?.(ROLE_TITLE_SELECTOR) && getCrimeIdsWithin(current).has(id)) {
+				return current;
+			}
+			current = current.parentElement;
+		}
+		return null;
+	};
+
+	const isVisibleElement = (element) =>
+		!!element?.isConnected &&
+		(typeof element.getClientRects !== "function" || element.getClientRects().length > 0);
 
 	const isInsidePanel = (element) => !!element?.closest?.(`#${PANEL_ID}`);
 
 	const findCrimeElement = (crimeId) => {
 		const id = String(crimeId || "");
 		if (!id) return null;
+		const activeCrimeId = getCurrentPageCrimeId();
+		if (activeCrimeId && activeCrimeId !== id) return null;
 
 		const candidates = Array.from(
-			document.querySelectorAll("a[href], button, [data-crime-id], [data-crimeid], [data-oc-id], [data-id]")
-		).filter((element) => !isInsidePanel(element));
-		const match = candidates.find((element) => getElementCrimeId(element) === id);
-		if (match) return getCrimeContainer(match);
+			document.querySelectorAll(CRIME_ID_SELECTOR)
+		).filter((element) => !isInsidePanel(element) && getElementCrimeId(element) === id);
+		const seen = new Set();
+		const containers = candidates
+			.map((element) => getCrimeContainer(element, id))
+			.filter((element) => {
+				if (!element || seen.has(element)) return false;
+				seen.add(element);
+				return true;
+			});
 
-		return candidates
-			.map(getCrimeContainer)
-			.find((element) => normalizeText(element?.textContent).includes(`oc #${id}`)) || null;
+		return containers.find(isVisibleElement) || containers[0] || null;
 	};
 
 	const findRoleElement = (crimeElement, recommendation) => {
-		if (!recommendation) return null;
-		const exactTitleMatch =
-			findExactRoleTitleElement(crimeElement, recommendation) ||
-			findExactRoleTitleElement(document, recommendation);
-		if (exactTitleMatch) return exactTitleMatch;
+		if (!crimeElement || !recommendation) return null;
+		const isWithinCrime = (element) =>
+			!!element && (element === crimeElement || crimeElement.contains(element));
+		const exactTitleMatch = findExactRoleTitleElement(crimeElement, recommendation);
+		if (isWithinCrime(exactTitleMatch)) return exactTitleMatch;
 		if (getPositionRoleHint(recommendation)) return null;
 
 		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
 
-		const scope = crimeElement || document;
 		const candidates = Array.from(
-			scope.querySelectorAll(
+			crimeElement.querySelectorAll(
 				"li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role'], [class*='member'], [class*='Member'], button, a"
 			)
 		).filter((element) => !isInsidePanel(element));
@@ -1191,7 +1230,11 @@
 				return text && roleTerms.some((term) => text.includes(term));
 			});
 
-		return match?.closest("li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") || match || null;
+		const wrapper =
+			match?.closest("li, tr, [role='row'], [class*='slot'], [class*='Slot'], [class*='role'], [class*='Role']") ||
+			match ||
+			null;
+		return isWithinCrime(wrapper) ? wrapper : null;
 	};
 
 	const clearRecommendationHighlights = () => {
