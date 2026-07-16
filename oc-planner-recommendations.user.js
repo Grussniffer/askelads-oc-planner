@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.50
+// @version      0.2.51
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.50";
+	const SCRIPT_VERSION = "0.2.51";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -2533,9 +2533,9 @@
 						<tr><th>Key storage and sharing</th><td>Stored locally only. The userscript never asks the backend to save your key.</td></tr>
 						<tr><th>Required access</th><td>Enough access for Torn profile lookup. OC data is fetched from the backend's latest saved planner snapshot.</td></tr>
 					</table>
+					<div class="ocp-footer">Displays advice only. It does not click, join, submit, or automate Torn actions.</div>
 					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
-				<div class="ocp-footer">Displays advice only. It does not click, join, submit, or automate Torn actions.</div>
 			</div>
 		`;
 
