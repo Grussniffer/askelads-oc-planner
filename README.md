@@ -29,3 +29,5 @@ The script uses userscript HTTPS requests:
 - Backend `POST /api/oc-planner/script-access` to record that this player checked the planner
 
 It then filters the returned planner to the player who owns the API key. The check-in sends player id, player name, faction id, script version, and planner timestamp/run id. It does not send the Torn API key. The userscript loads on Torn's `factions.php` page, but the panel only activates on the faction organized crimes tab.
+
+For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The full faction planner is not added to this local cache.

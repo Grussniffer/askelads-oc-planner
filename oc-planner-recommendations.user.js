@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.48
+// @version      0.2.49
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,10 +26,11 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.48";
+	const SCRIPT_VERSION = "0.2.49";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
+	const PAYLOAD_STORAGE_KEY = "askeladds_oc_planner_member_payload";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
 	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
 	const PANEL_ID = "askeladds-oc-planner-panel";
@@ -83,6 +84,8 @@
 		profile: null,
 		lastPlanner: null,
 		lastPayload: null,
+		lastCheckedAt: 0,
+		usingCachedPayload: false,
 		loading: false,
 		error: "",
 		progress: "",
@@ -90,10 +93,15 @@
 		active: false,
 		collapsed: String(storage.get(COLLAPSED_STORAGE_KEY, "") || "") === "1",
 		disclosureOpen: false,
+		flexibleOpen: false,
 		pendingHighlight: null,
 		lastHighlightRecommendation: null,
+		targetFeedback: null,
+		takenRecommendationKeys: new Set(),
 		highlightObserver: null,
 		highlightRetryQueued: false,
+		pageObserver: null,
+		domSyncTimer: undefined,
 		dragSuppressTapUntil: 0,
 	};
 
@@ -101,6 +109,7 @@
 
 	addStyle(`
 		#${PANEL_ID} {
+			box-sizing: border-box;
 			position: fixed;
 			right: 14px;
 			bottom: 54px;
@@ -122,6 +131,9 @@
 		}
 		#${PANEL_ID} * {
 			box-sizing: border-box;
+		}
+		#${PANEL_ID} [hidden] {
+			display: none !important;
 		}
 		#${PANEL_ID} button,
 		#${PANEL_ID} input {
@@ -155,6 +167,27 @@
 			letter-spacing: 0;
 			color: #f4d990;
 			text-shadow: 0 1px 0 #000;
+		}
+		#${PANEL_ID} .ocp-title-group {
+			min-width: 0;
+			flex: 1;
+		}
+		#${PANEL_ID} .ocp-target-feedback {
+			display: block;
+			margin-top: 1px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			font-size: 10px;
+			font-weight: 700;
+			color: #e9cc87;
+		}
+		#${PANEL_ID} .ocp-target-feedback.found {
+			color: #aee3a5;
+		}
+		#${PANEL_ID} .ocp-target-feedback.filled,
+		#${PANEL_ID} .ocp-target-feedback.missing {
+			color: #ffb7a9;
 		}
 		#${PANEL_ID} .ocp-actions {
 			display: flex;
@@ -219,7 +252,7 @@
 		}
 		#${PANEL_ID} .ocp-toolbar {
 			display: grid;
-			grid-template-columns: auto auto minmax(0, 1fr);
+			grid-template-columns: auto minmax(0, 1fr);
 			align-items: center;
 			gap: 4px;
 			margin-top: 0;
@@ -388,6 +421,10 @@
 			outline: 3px solid #ffd166 !important;
 			box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.26), 0 0 18px rgba(255, 209, 102, 0.5) !important;
 		}
+		.askeladds-oc-planner-role-highlight.askeladds-oc-planner-role-filled {
+			outline-color: #ff806f !important;
+			box-shadow: 0 0 0 3px rgba(255, 128, 111, 0.24), 0 0 18px rgba(255, 128, 111, 0.48) !important;
+		}
 		.${JOIN_CUE_BADGE_CLASS} {
 			display: inline-flex;
 			align-items: center;
@@ -464,10 +501,20 @@
 			margin-top: 5px;
 		}
 		#${PANEL_ID} .ocp-team-title {
-			display: none;
+			display: flex;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 5px;
 			color: #b7ad9e;
 			font-weight: 700;
 			margin-bottom: 3px;
+		}
+		#${PANEL_ID} .ocp-team-summary {
+			min-width: 0;
+			text-align: right;
+			font-size: 10px;
+			font-weight: 400;
+			color: #c8beae;
 		}
 		#${PANEL_ID} .ocp-team-chips {
 			display: grid;
@@ -494,6 +541,10 @@
 			border-color: #b88725;
 			background: rgba(60, 39, 8, 0.78);
 		}
+		#${PANEL_ID} .ocp-team-chip.open {
+			border-style: dashed;
+			background: rgba(8, 8, 8, 0.42);
+		}
 		#${PANEL_ID} .ocp-chip-slot {
 			display: block;
 			color: #b7ad9e;
@@ -515,10 +566,52 @@
 			font-weight: 700;
 		}
 		#${PANEL_ID} .ocp-chip-flag {
-			color: #ffd98b;
+			display: inline-flex;
+			color: #d5c8b4;
 			font-size: 10px;
 			font-weight: 700;
 			text-transform: uppercase;
+		}
+		#${PANEL_ID} .ocp-chip-flags {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 2px 4px;
+		}
+		#${PANEL_ID} .ocp-chip-flag.joined {
+			color: #aee3a5;
+		}
+		#${PANEL_ID} .ocp-chip-flag.forced {
+			color: #ffd98b;
+		}
+		#${PANEL_ID} .ocp-chip-flag.open {
+			color: #aaa39a;
+		}
+		#${PANEL_ID} .ocp-flexible {
+			margin-top: 6px;
+			border: 1px solid #765a22;
+			border-radius: 7px;
+			background: rgba(38, 28, 9, 0.62);
+			overflow: hidden;
+		}
+		#${PANEL_ID} .ocp-flexible summary {
+			cursor: pointer;
+			padding: 6px;
+			font-weight: 700;
+			color: #f0d48d;
+		}
+		#${PANEL_ID} .ocp-flexible-body {
+			padding: 0 6px 6px;
+		}
+		#${PANEL_ID} .ocp-flexible-note {
+			margin-bottom: 4px;
+			font-size: 11px;
+		}
+		#${PANEL_ID} .ocp-flexible-item {
+			padding: 5px 0;
+			border-top: 1px solid rgba(118, 90, 34, 0.58);
+		}
+		#${PANEL_ID} .ocp-flexible-item:first-of-type {
+			border-top: 0;
 		}
 		#${PANEL_ID} .ocp-disclosure {
 			margin-top: 8px;
@@ -553,6 +646,12 @@
 			color: #cdbb98;
 			font-weight: 700;
 		}
+		#${PANEL_ID} .ocp-privacy-actions {
+			display: flex;
+			justify-content: flex-end;
+			padding: 6px;
+			border-top: 1px solid #3b2c17;
+		}
 		@media (max-width: 520px) {
 			.${JOIN_CUE_BADGE_CLASS} {
 				max-width: 52vw;
@@ -563,6 +662,7 @@
 				right: 8px;
 				bottom: 8px;
 				width: calc(100vw - 16px);
+				max-width: calc(100% - 16px);
 				max-height: min(60vh, calc(100vh - 16px));
 				font-size: 11px;
 			}
@@ -587,7 +687,7 @@
 				margin-top: 6px;
 			}
 			#${PANEL_ID} .ocp-toolbar {
-				grid-template-columns: auto auto minmax(0, 1fr);
+				grid-template-columns: auto minmax(0, 1fr);
 			}
 			#${PANEL_ID} .ocp-button {
 				padding: 6px 7px;
@@ -621,11 +721,18 @@
 
 	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
 	registerMenuCommand("OC Planner: forget API key", () => {
+		stopHighlightLock();
 		storage.remove(STORAGE_KEY);
 		storage.remove(PROFILE_STORAGE_KEY);
+		storage.remove(PAYLOAD_STORAGE_KEY);
 		state.profile = null;
 		state.lastPlanner = null;
 		state.lastPayload = null;
+		state.lastCheckedAt = 0;
+		state.usingCachedPayload = false;
+		state.takenRecommendationKeys.clear();
+		state.targetFeedback = null;
+		state.flexibleOpen = false;
 		state.error = "";
 		state.progress = "";
 		state.disclosureOpen = false;
@@ -888,6 +995,58 @@
 		state.profile = null;
 	};
 
+	const getCachedMemberPayload = (key) => {
+		const keyCacheId = getKeyCacheId(key);
+		if (!keyCacheId) return null;
+		try {
+			const cached = JSON.parse(String(storage.get(PAYLOAD_STORAGE_KEY, "") || ""));
+			if (
+				cached?.schemaVersion !== 1 ||
+				cached?.keyCacheId !== keyCacheId ||
+				!cached?.payload?.memberId
+			) {
+				return null;
+			}
+			return cached;
+		} catch {
+			return null;
+		}
+	};
+
+	const saveCachedMemberPayload = (key, profile, payload, checkedAt) => {
+		if (!key || !payload?.memberId) return;
+		try {
+			storage.set(
+				PAYLOAD_STORAGE_KEY,
+				JSON.stringify({
+					schemaVersion: 1,
+					keyCacheId: getKeyCacheId(key),
+					memberId: payload.memberId,
+					factionId: getPlannerFactionId(profile),
+					checkedAt,
+					payload,
+				})
+			);
+		} catch (error) {
+			console.warn("OC Planner member cache could not be saved:", error);
+		}
+	};
+
+	const hydrateCachedMemberPayload = (key) => {
+		const cached = getCachedMemberPayload(key);
+		if (!cached) return false;
+		state.lastPayload = cached.payload;
+		state.lastCheckedAt = Number(cached.checkedAt || 0);
+		state.usingCachedPayload = true;
+		return true;
+	};
+
+	const clearCachedMemberPayload = () => {
+		storage.remove(PAYLOAD_STORAGE_KEY);
+		state.lastCheckedAt = 0;
+		state.usingCachedPayload = false;
+	};
+
 	const isChallengePage = () => {
 		const title = normalizeText(document.title);
 		return (
@@ -915,7 +1074,10 @@
 	const removePanel = () => {
 		document.getElementById(PANEL_ID)?.remove();
 		clearRecommendationJoinCues();
+		clearRecommendationHighlights();
 		lastRenderedMarkup = "";
+		state.pendingHighlight = null;
+		state.targetFeedback = null;
 		state.highlightObserver?.disconnect();
 		state.highlightObserver = null;
 		state.highlightRetryQueued = false;
@@ -1268,7 +1430,10 @@
 			.forEach((element) => element.classList.remove("askeladds-oc-planner-highlight"));
 		document
 			.querySelectorAll(".askeladds-oc-planner-role-highlight")
-			.forEach((element) => element.classList.remove("askeladds-oc-planner-role-highlight"));
+			.forEach((element) => {
+				element.classList.remove("askeladds-oc-planner-role-highlight");
+				element.classList.remove("askeladds-oc-planner-role-filled");
+			});
 	};
 
 	const clearRecommendationJoinCues = () => {
@@ -1296,6 +1461,11 @@
 		const previous = recommendations[index - 1];
 		return `Join after ${previous?.crimeName || `OC #${previous?.crimeId || "?"}`}`;
 	};
+
+	const getRecommendationKey = (recommendation) =>
+		`${String(recommendation?.crimeId || "")}|${normalizeText(
+			recommendation?.position || recommendation?.role
+		)}`;
 
 	const findCrimeTitleElement = (crimeElement, crimeName) => {
 		const target = normalizeText(crimeName);
@@ -1331,7 +1501,7 @@
 			desired.set(crimeId, {
 				recommendation,
 				label: getRecommendationJoinCue(recommendations, index),
-				step: index + 2,
+				phase: index === 0 ? "Next" : "Then",
 			});
 		});
 
@@ -1344,7 +1514,7 @@
 				return;
 			}
 			badge.textContent = item.label;
-			badge.title = `Planner step #${item.step}: ${item.label}`;
+			badge.title = `${item.phase}: ${item.label}`;
 			existingByCrimeId.set(crimeId, badge);
 		});
 
@@ -1361,9 +1531,72 @@
 			badge.className = JOIN_CUE_BADGE_CLASS;
 			badge.dataset.ocpCrimeId = crimeId;
 			badge.textContent = item.label;
-			badge.title = `Planner step #${item.step}: ${item.label}`;
+			badge.title = `${item.phase}: ${item.label}`;
 			titleElement.appendChild(badge);
 		}
+	};
+
+	const syncTargetFeedbackElement = () => {
+		const element = document.querySelector(`#${PANEL_ID} .ocp-target-feedback`);
+		if (!element) return;
+		const feedback = state.targetFeedback;
+		element.hidden = !feedback;
+		element.className = `ocp-target-feedback ${feedback?.kind || ""}`.trim();
+		element.textContent = feedback?.label || "";
+		element.title = feedback?.detail || feedback?.label || "";
+	};
+
+	const syncHighlightControls = () => {
+		const panel = document.getElementById(PANEL_ID);
+		if (!panel) return;
+		const findButton = panel.querySelector(".ocp-highlight-again");
+		const stopButton = panel.querySelector(".ocp-highlight-stop");
+		if (findButton) findButton.hidden = !state.lastHighlightRecommendation || !!state.pendingHighlight;
+		if (stopButton) stopButton.hidden = !state.pendingHighlight;
+	};
+
+	const setTargetFeedback = (kind, label, detail = "") => {
+		state.targetFeedback = label ? { kind, label, detail } : null;
+		syncTargetFeedbackElement();
+	};
+
+	const setRecommendationTaken = (recommendation, taken) => {
+		const key = getRecommendationKey(recommendation);
+		if (!key || key.startsWith("|")) return;
+		const hadKey = state.takenRecommendationKeys.has(key);
+		if (taken === hadKey) return;
+		if (taken) state.takenRecommendationKeys.add(key);
+		else state.takenRecommendationKeys.delete(key);
+		window.setTimeout(() => render(), 0);
+	};
+
+	const getRoleOccupant = (roleElement) => {
+		if (!roleElement) return null;
+		const roleScope = roleElement.closest?.("[class*='wrapper'], [class*='Wrapper']") || roleElement;
+		const selector =
+			"a[href*='profiles.php'], a[href*='XID='], [class*='userName'], [class*='UserName'], [class*='username'], [class*='memberName'], [class*='MemberName'], [class*='playerName']";
+		const element = roleScope.querySelector(selector);
+		if (!element || element.closest?.("[class*='slotHeader']")) return null;
+		const href = element.getAttribute?.("href") || element.closest?.("a[href]")?.getAttribute("href") || "";
+		const idMatch = href.match(/[?&#](?:XID|userI?d|playerI?d)=(\d+)/i);
+		return {
+			id: Number(idMatch?.[1] || 0),
+			name: String(element.textContent || "").trim(),
+		};
+	};
+
+	const inspectRoleAvailability = (roleElement) => {
+		const occupant = getRoleOccupant(roleElement);
+		if (occupant) {
+			const memberId = Number(state.lastPayload?.memberId || state.profile?.player_id || 0);
+			const memberName = normalizeText(state.lastPayload?.memberName || state.profile?.name);
+			const isYou =
+				(occupant.id && memberId && occupant.id === memberId) ||
+				(occupant.name && memberName && normalizeText(occupant.name) === memberName);
+			if (!isYou) return { kind: "filled", occupant };
+		}
+
+		return { kind: "found", occupant };
 	};
 
 	const stopHighlightLock = (clearHighlights = true) => {
@@ -1372,6 +1605,7 @@
 		state.highlightObserver = null;
 		state.highlightRetryQueued = false;
 		if (clearHighlights) clearRecommendationHighlights();
+		syncHighlightControls();
 	};
 
 	const highlightRecommendation = (recommendationOrCrimeId) => {
@@ -1380,23 +1614,44 @@
 				? recommendationOrCrimeId
 				: { crimeId: recommendationOrCrimeId };
 		const id = String(recommendation.crimeId || "");
-		if (!id) return;
+		if (!id) return { roleFound: false };
 		clearRecommendationHighlights();
 
 		const crimeElement = findCrimeElement(id, recommendation);
 		const roleElement = findRoleElement(crimeElement, recommendation);
-		roleElement?.classList.add("askeladds-oc-planner-role-highlight");
-		roleElement?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-		return !!roleElement;
+		if (!roleElement) return { roleFound: false };
+
+		const availability = inspectRoleAvailability(roleElement);
+		roleElement.classList.add("askeladds-oc-planner-role-highlight");
+		if (availability.kind === "filled") {
+			roleElement.classList.add("askeladds-oc-planner-role-filled");
+		}
+		if (!state.pendingHighlight?.hasScrolled) {
+			roleElement.scrollIntoView?.({ behavior: "smooth", block: "center" });
+			if (state.pendingHighlight) state.pendingHighlight.hasScrolled = true;
+		}
+		return { roleFound: true, availability };
 	};
 
 	const queueHighlightRecommendation = (recommendation) => {
 		if (!recommendation?.crimeId) return;
+		const recommendationKey = getRecommendationKey(recommendation);
+		if (state.pendingHighlight?.recommendationKey === recommendationKey) {
+			return;
+		}
 		state.lastHighlightRecommendation = recommendation;
 		state.pendingHighlight = {
 			recommendation,
+			recommendationKey,
 			startedAt: Date.now(),
+			hasScrolled: false,
 		};
+		setTargetFeedback(
+			"opening",
+			"Opening OC",
+			`Looking for ${recommendation.crimeName || `OC #${recommendation.crimeId}`} / ${recommendation.position || recommendation.role || "role"}`
+		);
+		syncHighlightControls();
 		state.highlightObserver?.disconnect();
 		if (typeof MutationObserver === "function" && document.body) {
 			state.highlightObserver = new MutationObserver(() => {
@@ -1417,12 +1672,28 @@
 	const retryPendingHighlight = () => {
 		const pending = state.pendingHighlight;
 		if (!pending) return;
-		const roleFound = highlightRecommendation(pending.recommendation);
-		if (roleFound && Date.now() - pending.startedAt > 2800) {
+		const result = highlightRecommendation(pending.recommendation);
+		if (result.roleFound) {
+			const filled = result.availability?.kind === "filled";
+			setRecommendationTaken(pending.recommendation, filled);
+			setTargetFeedback(
+				filled ? "filled" : "found",
+				filled ? "Role already filled" : "Role found",
+				filled && result.availability?.occupant?.name
+					? `${pending.recommendation.position || pending.recommendation.role || "Role"} is occupied by ${result.availability.occupant.name}. Tap the planner for other suitable openings.`
+					: `${pending.recommendation.position || pending.recommendation.role || "Role"} found in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}.`
+			);
+		}
+		if (result.roleFound && Date.now() - pending.startedAt > 2800) {
 			stopHighlightLock(false);
 			return;
 		}
 		if (Date.now() - pending.startedAt > 25000) {
+			setTargetFeedback(
+				"missing",
+				"Could not find exact OC/role",
+				`Could not find ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} / ${pending.recommendation.position || pending.recommendation.role || "role"}. The OC may have changed or Torn may still be loading it.`
+			);
 			stopHighlightLock(false);
 		}
 	};
@@ -1542,9 +1813,11 @@
 					0
 			);
 		const id = currentId || plannedId || Number(slot.memberId || slot.playerId || slot.userId || 0);
+		const hasAssignment = !!(id || currentName || plannedName || fallbackName);
 		return {
 			id,
-			name: name || (id ? `Player ${id}` : "No pick"),
+			name: hasAssignment ? name || (id ? `Player ${id}` : "Planned member") : "Open",
+			hasAssignment,
 			isCurrent: hasCurrentMember,
 			isForced,
 		};
@@ -1558,6 +1831,7 @@
 				memberId: member.id,
 				memberName: member.name,
 				isYou: Number(member.id) === Number(memberId),
+				isOpen: !member.hasAssignment,
 				isCurrent: member.isCurrent,
 				isForced: member.isForced,
 			};
@@ -1663,13 +1937,10 @@
 
 	const memberFitsSlotBand = (cpr, slot) => {
 		const { min, max } = getSlotCprBand(slot);
-		return cpr >= min && cpr <= max;
+		return cpr > 0 && cpr >= min && cpr <= max;
 	};
 
-	const findFlexibleSlots = (planner, memberId, recommendations, unassigned) => {
-		if (recommendations.length) return [];
-		if (!unassigned.some((member) => member.available === "now")) return [];
-
+	const findFlexibleSlots = (planner, memberId) => {
 		const flexibleSlots = [];
 		for (const crime of planner?.crimes || []) {
 			for (const slot of crime.slots || []) {
@@ -1709,7 +1980,7 @@
 		const recommendations = findSlotRecommendations(planner, memberId);
 		const planningSteps = findPlanningSteps(planner, memberId);
 		const unassigned = findUnassigned(planner, memberId);
-		const flexibleSlots = findFlexibleSlots(planner, memberId, recommendations, unassigned);
+		const flexibleSlots = findFlexibleSlots(planner, memberId);
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
@@ -1720,6 +1991,7 @@
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			recommendations,
+			hasAssignedRole: recommendations.length > 0,
 			planningSteps,
 			unassigned,
 			flexibleSlots,
@@ -1733,6 +2005,7 @@
 		if (!panel) return;
 		state.collapsed = panel.classList.contains("collapsed");
 		state.disclosureOpen = !!panel.querySelector(".ocp-disclosure")?.open;
+		state.flexibleOpen = !!panel.querySelector(".ocp-flexible")?.open;
 	};
 
 	const setCollapsed = (collapsed) => {
@@ -1809,7 +2082,13 @@
 
 	const collapsePanelWithoutRender = () => {
 		state.collapsed = true;
-		document.getElementById(PANEL_ID)?.classList.add("collapsed");
+		const panel = document.getElementById(PANEL_ID);
+		panel?.classList.add("collapsed");
+		const collapseButton = panel?.querySelector(".ocp-collapse");
+		if (collapseButton) {
+			collapseButton.textContent = "+";
+			collapseButton.title = "Expand";
+		}
 	};
 
 	const refreshRecommendations = async (force) => {
@@ -1842,14 +2121,27 @@
 			render();
 
 			const planner = await getLatestPlanner(getPlannerFactionId(state.profile));
-			await recordScriptAccess(state.profile, planner);
-
+			const checkedAt = Math.floor(Date.now() / 1000);
 			state.lastPlanner = planner;
-			state.lastPayload = buildMemberPayload(state.profile, planner);
+			const nextPayload = buildMemberPayload(state.profile, planner);
+			const nextRecommendationKeys = new Set(
+				nextPayload.recommendations.map(getRecommendationKey)
+			);
+			state.takenRecommendationKeys = new Set(
+				[...state.takenRecommendationKeys].filter((key) => nextRecommendationKeys.has(key))
+			);
+			state.lastPayload = nextPayload;
+			state.lastCheckedAt = checkedAt;
+			state.usingCachedPayload = false;
+			if (!state.takenRecommendationKeys.size && state.targetFeedback?.kind === "filled") {
+				state.targetFeedback = null;
+			}
+			saveCachedMemberPayload(key, state.profile, state.lastPayload, checkedAt);
 			state.progress = "";
 			state.error = "";
 			scheduleAutoRefresh();
 			clearRecommendationHighlights();
+			void recordScriptAccess(state.profile, planner);
 		} catch (error) {
 			state.error = getFriendlyErrorMessage(error);
 			state.progress = "";
@@ -1922,7 +2214,7 @@
 		if (!recommendation) return "";
 		return `
 			<div class="ocp-plan-box current ocp-compact-line" title="${escapeHtml(currentOcLabel(recommendation))}">
-				<span class="ocp-line-label">Step #1</span>
+				<span class="ocp-line-label">Current</span>
 				<span class="ocp-line-value">${escapeHtml(currentStepTitle(recommendation))} - ${escapeHtml(currentOcLabel(recommendation))}</span>
 			</div>
 		`;
@@ -1930,7 +2222,7 @@
 
 	const recommendationCard = (recommendation, index) => {
 		const crimeUrl = getCrimeUrl(recommendation.crimeId);
-		const stepNumber = index + 2;
+		const timelineLabel = index === 0 ? "Next" : "Then";
 		const startLabel =
 			recommendation.plannedStartAt && recommendation.plannedStartAt > Math.floor(Date.now() / 1000)
 				? `${formatRelative(recommendation.plannedStartAt)} (${formatTimestamp(recommendation.plannedStartAt)})`
@@ -1940,24 +2232,45 @@
 			? `${formatRelative(plannedFinishAt)} (${formatTimestamp(plannedFinishAt)})`
 			: "";
 		const successChance = formatChance(recommendation.successChance);
-		const step = recommendation.planningStep;
-		const expectedTeam = (recommendation.expectedTeam || [])
-			.map(
-				(member) => `
-					<span class="ocp-team-chip ${member.isYou ? "you" : ""} ${member.isCurrent ? "current" : ""} ${member.isForced ? "forced" : ""}" title="${member.isForced ? "Forced planner assignment" : member.isCurrent ? "Joined/current slot member from planner snapshot" : "Planner pick"}">
-						<span class="ocp-chip-slot">${escapeHtml(member.slot)}:</span>
-						<span class="ocp-chip-member">${escapeHtml(member.memberName)}</span>
-						${member.isForced ? `<span class="ocp-chip-flag">Forced</span>` : ""}
-					</span>
-				`
-			)
-			.join("");
-		const nextMeta = [
-			step ? `Planner step #${step}` : "",
-			recommendation.difficulty ? `T${recommendation.difficulty}` : "",
+		const team = recommendation.expectedTeam || [];
+		const getTeamState = (member) =>
+			member.isCurrent ? "Joined" : member.isForced ? "Forced" : member.isOpen ? "Open" : "Planned";
+		const lineupCounts = team.reduce(
+			(counts, member) => {
+				counts[getTeamState(member).toLowerCase()] += 1;
+				return counts;
+			},
+			{ joined: 0, planned: 0, forced: 0, open: 0 }
+		);
+		const lineupSummary = [
+			lineupCounts.joined ? `${lineupCounts.joined} joined` : "",
+			lineupCounts.planned ? `${lineupCounts.planned} planned` : "",
+			lineupCounts.forced ? `${lineupCounts.forced} forced` : "",
+			lineupCounts.open ? `${lineupCounts.open} open` : "",
 		]
 			.filter(Boolean)
-			.join(" / ");
+			.join(" <span aria-hidden=\"true\">&middot;</span> ");
+		const expectedTeam = team
+			.map(
+				(member) => {
+					const teamState = getTeamState(member);
+					const stateClass = teamState.toLowerCase();
+					return `
+					<span class="ocp-team-chip ${member.isYou ? "you" : ""} ${member.isCurrent ? "current" : ""} ${member.isForced ? "forced" : ""} ${member.isOpen ? "open" : ""}">
+						<span class="ocp-chip-slot">${escapeHtml(member.slot)}:</span>
+						<span class="ocp-chip-member">${escapeHtml(member.memberName)}</span>
+						<span class="ocp-chip-flags">
+							<span class="ocp-chip-flag ${stateClass}">${teamState}</span>
+							${member.isForced && teamState !== "Forced" ? `<span class="ocp-chip-flag forced">Forced</span>` : ""}
+						</span>
+					</span>
+				`;
+				}
+			)
+			.join("");
+		const nextMeta = [recommendation.difficulty ? `T${recommendation.difficulty}` : ""]
+			.filter(Boolean)
+			.join("");
 		const miniMeta = [
 			`Start ${startLabel}`,
 			finishLabel ? `Finish ${finishLabel}` : "",
@@ -1970,13 +2283,13 @@
 
 		return `
 			<div class="ocp-card plan next">
-				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
+				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-crime-name="${escapeHtml(recommendation.crimeName || "")}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
 					<span class="ocp-next-head">
-						<span class="ocp-next-main">Step #${stepNumber}: Join ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+						<span class="ocp-next-main"><strong>${timelineLabel}:</strong> Join ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
 						${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
 					</span>
 					${miniMeta ? `<span class="ocp-mini-meta">${miniMeta}</span>` : ""}
-					${expectedTeam ? `<span class="ocp-team" title="Planner snapshot lineup, including joined members when the snapshot has them."><span class="ocp-team-title">Planner lineup</span><span class="ocp-team-chips">${expectedTeam}</span></span>` : ""}
+					${expectedTeam ? `<span class="ocp-team"><span class="ocp-team-title"><span>Lineup</span><span class="ocp-team-summary">${lineupSummary}</span></span><span class="ocp-team-chips">${expectedTeam}</span></span>` : ""}
 				</a>
 			</div>
 		`;
@@ -1996,15 +2309,13 @@
 			.join("");
 
 		return `
-			<div class="ocp-card need-more">
+			<div class="ocp-flexible-item">
 				<div class="ocp-card-heading">
-					<span class="ocp-card-title">Flexible Slot</span>
 					<span>${escapeHtml(compactCrimeLabel(slot.crimeName, slot.crimeId))}</span>
 					<span class="ocp-muted">${escapeHtml(slot.position || slot.role || "Slot")}</span>
 				</div>
 				${meta ? `<div class="ocp-mini-meta">${meta}</div>` : ""}
-				<div class="ocp-muted">Admin marked this as anyone free, and your CPR fits this role's configured band.</div>
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">Go to OC #${escapeHtml(slot.crimeId)}</a>
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-crime-name="${escapeHtml(slot.crimeName || "")}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">View role in OC #${escapeHtml(slot.crimeId)}</a>
 			</div>
 		`;
 	};
@@ -2012,7 +2323,7 @@
 	const unassignedCard = (member) => `
 		<div class="ocp-card need-more">
 			<div class="ocp-card-title">No Slot Assigned</div>
-			<div>Planner knows your CPR, but there is no good open slot for you right now.</div>
+			<div>No personal slot is reserved for you in the latest plan.</div>
 			<div class="ocp-grid">
 				${member.bestCprCrimeName ? `<div class="ocp-label">Best fit</div><div class="ocp-value">${escapeHtml(member.bestCprCrimeName)}</div>` : ""}
 				${member.bestCprRoleName ? `<div class="ocp-label">Role</div><div class="ocp-value">${escapeHtml(member.bestCprRoleName)}</div>` : ""}
@@ -2028,7 +2339,22 @@
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
 		const current = payload.recommendations.length ? currentStepCard(payload.recommendations[0]) : "";
-		const flexible = payload.flexibleSlots.map(flexibleSlotCard).join("");
+		const mayUseFlexibleSlots = !payload.recommendations.length || state.takenRecommendationKeys.size > 0;
+		const flexibleSlots = mayUseFlexibleSlots
+			? (payload.flexibleSlots || []).filter(
+					(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
+				)
+			: [];
+		const flexibleItems = flexibleSlots.map(flexibleSlotCard).join("");
+		const flexible = flexibleItems
+			? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
+				<summary>Other suitable openings (${flexibleSlots.length})</summary>
+				<div class="ocp-flexible-body">
+					<div class="ocp-flexible-note ocp-muted"><strong>Optional, not reserved for you.</strong> Your CPR is inside each role's limits configured by the planner admins.</div>
+					${flexibleItems}
+				</div>
+			</details>`
+			: "";
 		const unassigned = !payload.recommendations.length
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
@@ -2042,20 +2368,27 @@
 		return `
 			${current}
 			${cards}
-			${flexible}
 			${unassigned}
+			${flexible}
 			${missingCpr}
 			${empty}
 		`;
 	};
 
 	const plannerStatusText = () => {
-		if (state.progress) return state.progress;
+		if (state.progress) {
+			return state.usingCachedPayload && state.lastPayload
+				? "Checking update | Cached result shown"
+				: state.progress;
+		}
 		const payload = state.lastPayload;
 		if (!payload?.plannerGeneratedAt) return state.loading ? "Loading..." : "";
-		const age = formatAge(payload.plannerGeneratedAt);
-		const generated = formatTimestamp(payload.plannerGeneratedAt);
-		return age ? `Planner ${age} - ${generated}` : generated;
+		const planAge = formatAge(payload.plannerGeneratedAt);
+		const checkedAge = formatAge(state.lastCheckedAt);
+		if (state.usingCachedPayload) {
+			return checkedAge ? `Cached ${checkedAge} | Plan ${planAge || "saved"}` : `Cached | Plan ${planAge || "saved"}`;
+		}
+		return checkedAge ? `Checked ${checkedAge} | Plan ${planAge || "saved"}` : `Plan ${planAge || "saved"}`;
 	};
 
 	const render = () => {
@@ -2081,14 +2414,12 @@
 			state.profile?.name ||
 			"Askelads OC";
 		const statusText = plannerStatusText();
-		const highlightAgain = state.lastHighlightRecommendation
-			? `<button class="ocp-button ocp-highlight-again" title="Highlight recommendation again">HL</button>`
-			: "";
+		const feedback = state.targetFeedback;
+		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="Find the exact assigned role again"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>Find role</button>`;
 		const keyControls = savedKey
 			? `
 				<div class="ocp-row ocp-toolbar">
 					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
-					<button class="ocp-button danger ocp-forget">Change key</button>
 					<span class="ocp-toolbar-status" title="${escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
 				</div>
 			`
@@ -2102,10 +2433,13 @@
 
 		const markup = `
 			<div class="ocp-header">
-				<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+				<div class="ocp-title-group">
+					<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+					<span class="ocp-target-feedback ${escapeHtml(feedback?.kind || "")}" aria-live="polite" title="${escapeHtml(feedback?.detail || feedback?.label || "")}"${feedback ? "" : " hidden"}>${escapeHtml(feedback?.label || "")}</span>
+				</div>
 				<div class="ocp-actions">
 					${highlightAgain}
-					<button class="ocp-button ocp-highlight-stop" title="Stop highlight scrolling">Stop</button>
+					<button class="ocp-button ocp-highlight-stop" title="Stop finding the role"${state.pendingHighlight ? "" : " hidden"}>Stop</button>
 					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
 				</div>
 			</div>
@@ -2118,18 +2452,21 @@
 				<details class="ocp-disclosure"${state.disclosureOpen ? " open" : ""}>
 					<summary>${savedKey ? "Privacy" : "API key use"}</summary>
 					<table>
-						<tr><th>Data storage</th><td>API key and profile cache are stored locally by your userscript manager or Torn PDA.</td></tr>
+						<tr><th>Data storage</th><td>API key, profile cache, and your last filtered recommendation are stored locally by your userscript manager or Torn PDA.</td></tr>
 						<tr><th>Data sharing</th><td>Your key is sent to Torn's official API for profile lookup. It is not sent to the OC Planner backend.</td></tr>
 						<tr><th>Purpose of use</th><td>Show your own OC Planner recommendation on the faction crimes page.</td></tr>
 						<tr><th>Key storage and sharing</th><td>Stored locally only. The userscript never asks the backend to save your key.</td></tr>
 						<tr><th>Required access</th><td>Enough access for Torn profile lookup. OC data is fetched from the backend's latest saved planner snapshot.</td></tr>
 					</table>
+					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
 				<div class="ocp-footer">Displays advice only. It does not click, join, submit, or automate Torn actions.</div>
 			</div>
 		`;
 
 		if (markup === lastRenderedMarkup) {
+			syncTargetFeedbackElement();
+			syncHighlightControls();
 			syncRecommendationJoinCues();
 			return;
 		}
@@ -2154,13 +2491,18 @@
 		addTapHandler(panel.querySelector(".ocp-highlight-stop"), (event) => {
 			event.stopPropagation();
 			stopHighlightLock();
+			setTargetFeedback("", "");
 		});
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
 		});
+		panel.querySelector(".ocp-flexible")?.addEventListener("toggle", (event) => {
+			state.flexibleOpen = !!event.currentTarget.open;
+		});
 		panel.querySelectorAll(".ocp-card-link").forEach((link) => {
 			const recommendation = {
 				crimeId: link.dataset.ocpCrimeId,
+				crimeName: link.dataset.ocpCrimeName,
 				role: link.dataset.ocpRole,
 				position: link.dataset.ocpPosition,
 				roleImpactLabel: link.dataset.ocpRoleImpact,
@@ -2172,23 +2514,29 @@
 				window.setTimeout(() => collapsePanelWithoutRender(), 50);
 			};
 			link.addEventListener("pointerdown", prepareOcNavigation);
-			link.addEventListener("touchstart", prepareOcNavigation);
 			link.addEventListener("touchend", collapseAfterNavigationTap);
 			link.addEventListener("click", () => {
 				prepareOcNavigation();
 				collapseAfterNavigationTap();
 			});
 		});
+		syncTargetFeedbackElement();
+		syncHighlightControls();
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
+			stopHighlightLock();
 			storage.remove(STORAGE_KEY);
 			storage.remove(PROFILE_STORAGE_KEY);
+			clearCachedMemberPayload();
 			state.profile = null;
 			state.lastPlanner = null;
 			state.lastPayload = null;
+			state.takenRecommendationKeys.clear();
+			state.targetFeedback = null;
 			state.error = "Paste a new Torn API key.";
 			state.progress = "";
 			state.disclosureOpen = false;
+			state.flexibleOpen = false;
 			render();
 		});
 		panel.querySelector(".ocp-api-key")?.addEventListener("keydown", (event) => {
@@ -2198,9 +2546,14 @@
 	};
 
 	const start = () => {
+		const key = getStoredKey();
+		if (key) {
+			state.profile = getCachedProfile(key);
+			hydrateCachedMemberPayload(key);
+		}
 		state.active = isOcCrimesPage();
 		render();
-		if (state.active && getStoredKey() && !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl())) {
+		if (state.active && key && !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl())) {
 			refreshRecommendations(false);
 		}
 	};
@@ -2223,26 +2576,56 @@
 		}
 	};
 
+	const nodeTouchesOcDom = (node) => {
+		const element = node instanceof Element ? node : node?.parentElement;
+		if (!element || isInsidePanel(element)) return false;
+		const selector =
+			`a[href*='crimeId'], [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot'], [class*='crime'], [class*='Crime'], h1, h2, h3, h4, h5, h6, .${JOIN_CUE_BADGE_CLASS}`;
+		return element.matches?.(selector) || !!element.querySelector?.(selector);
+	};
+
+	const queuePageDomSync = (delay = 250) => {
+		if (state.domSyncTimer) return;
+		state.domSyncTimer = window.setTimeout(() => {
+			state.domSyncTimer = undefined;
+			syncPageActivation();
+			if (state.active) syncRecommendationJoinCues();
+		}, delay);
+	};
+
+	const startPageObserver = () => {
+		if (state.pageObserver || typeof MutationObserver !== "function" || !document.body) return;
+		state.pageObserver = new MutationObserver((mutations) => {
+			const relevant = mutations.some((mutation) =>
+				[...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesOcDom)
+			);
+			if (relevant) queuePageDomSync();
+		});
+		state.pageObserver.observe(document.body, { childList: true, subtree: true });
+	};
+
 	window.addEventListener("hashchange", () => {
 		syncPageActivation();
+		queuePageDomSync(100);
 		window.setTimeout(() => retryPendingHighlight(), 600);
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
 	window.addEventListener("popstate", () => {
 		syncPageActivation();
+		queuePageDomSync(100);
 		window.setTimeout(() => retryPendingHighlight(), 600);
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
 	window.addEventListener("resize", applyStoredPanelPosition);
-	window.setInterval(() => {
-		syncPageActivation();
-		syncRecommendationJoinCues();
-	}, 1500);
 
 	if (document.readyState === "loading") {
-		document.addEventListener("DOMContentLoaded", start, { once: true });
+		document.addEventListener("DOMContentLoaded", () => {
+			startPageObserver();
+			start();
+		}, { once: true });
 	} else {
+		startPageObserver();
 		start();
 	}
 })();
