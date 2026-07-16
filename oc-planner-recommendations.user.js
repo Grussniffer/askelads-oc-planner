@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.49
+// @version      0.2.50
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.49";
+	const SCRIPT_VERSION = "0.2.50";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -444,6 +444,10 @@
 			border-color: #8d6c25;
 			background: rgba(49, 35, 10, 0.78);
 		}
+		#${PANEL_ID} .ocp-card.no-plan {
+			border-color: #6d531f;
+			background: linear-gradient(180deg, rgba(47, 36, 17, 0.82), rgba(22, 18, 12, 0.82));
+		}
 		#${PANEL_ID} .ocp-card-title {
 			font-weight: 700;
 			font-size: 13px;
@@ -842,7 +846,19 @@
 						?.replace(/^content-type:\s*/i, "")
 						.trim();
 					if (status < 200 || status >= 300) {
-						reject(new Error(`${options.label || "Request"} failed with HTTP ${status}.`));
+						let errorPayload = null;
+						try {
+							errorPayload = JSON.parse(response.responseText || "null");
+						} catch {
+							// Keep the normal HTTP error when the response is not JSON.
+						}
+						const detail = String(errorPayload?.error || errorPayload?.message || "").trim();
+						const requestError = new Error(
+							`${options.label || "Request"} failed with HTTP ${status}${detail ? `: ${detail}` : "."}`
+						);
+						requestError.status = status;
+						requestError.code = String(errorPayload?.code || "");
+						reject(requestError);
 						return;
 					}
 					if (contentType && !/json/i.test(contentType)) {
@@ -893,14 +909,24 @@
 
 	const getLatestPlanner = async (factionId) => {
 		const encodedFactionId = encodeURIComponent(String(factionId || DEFAULT_FACTION_ID));
-		const payload = await requestJson({
-			url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
-			label: "OC Planner snapshot request",
-		});
-		if (!payload?.planner) {
-			throw new Error("No saved OC planner run was returned by the backend.");
+		try {
+			const payload = await requestJson({
+				url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
+				label: "OC Planner snapshot request",
+			});
+			return {
+				planner: payload?.planner || null,
+				status: payload?.planner ? "ready" : "missing",
+			};
+		} catch (error) {
+			if (
+				(Number(error?.status) === 401 || Number(error?.status) === 403) &&
+				["AUTH_REQUIRED", "MODULE_DISABLED"].includes(String(error?.code || ""))
+			) {
+				return { planner: null, status: "unavailable" };
+			}
+			throw error;
 		}
-		return payload.planner;
 	};
 
 	const getProfileFactionId = (profile) =>
@@ -1969,7 +1995,7 @@
 		);
 	};
 
-	const buildMemberPayload = (profile, planner) => {
+	const getProfileMemberIdentity = (profile) => {
 		const memberId = Number(profile?.player_id || profile?.profile?.player_id || 0);
 		const memberName =
 			profile?.name ||
@@ -1977,6 +2003,11 @@
 			profile?.profile?.name ||
 			profile?.profile?.player_name ||
 			(memberId ? `Player ${memberId}` : "");
+		return { memberId, memberName };
+	};
+
+	const buildMemberPayload = (profile, planner) => {
+		const { memberId, memberName } = getProfileMemberIdentity(profile);
 		const recommendations = findSlotRecommendations(planner, memberId);
 		const planningSteps = findPlanningSteps(planner, memberId);
 		const unassigned = findUnassigned(planner, memberId);
@@ -1988,6 +2019,7 @@
 		return {
 			memberId,
 			memberName,
+			noPlan: false,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			recommendations,
@@ -1999,6 +2031,21 @@
 			warnings: planner?.warnings || [],
 		};
 	};
+
+	const buildNoPlanPayload = (profile, noPlanReason) => ({
+		...getProfileMemberIdentity(profile),
+		noPlan: true,
+		noPlanReason: noPlanReason || "missing",
+		plannerGeneratedAt: null,
+		summary: null,
+		recommendations: [],
+		hasAssignedRole: false,
+		planningSteps: [],
+		unassigned: [],
+		flexibleSlots: [],
+		missingCpr: false,
+		warnings: [],
+	});
 
 	const syncInteractiveState = () => {
 		const panel = document.getElementById(PANEL_ID);
@@ -2120,16 +2167,27 @@
 			state.progress = "Loading latest OC planner snapshot...";
 			render();
 
-			const planner = await getLatestPlanner(getPlannerFactionId(state.profile));
+			const snapshot = await getLatestPlanner(getPlannerFactionId(state.profile));
+			const planner = snapshot.planner;
 			const checkedAt = Math.floor(Date.now() / 1000);
 			state.lastPlanner = planner;
-			const nextPayload = buildMemberPayload(state.profile, planner);
+			const nextPayload = planner
+				? buildMemberPayload(state.profile, planner)
+				: buildNoPlanPayload(state.profile, snapshot.status);
 			const nextRecommendationKeys = new Set(
 				nextPayload.recommendations.map(getRecommendationKey)
 			);
-			state.takenRecommendationKeys = new Set(
-				[...state.takenRecommendationKeys].filter((key) => nextRecommendationKeys.has(key))
-			);
+			if (planner) {
+				state.takenRecommendationKeys = new Set(
+					[...state.takenRecommendationKeys].filter((key) => nextRecommendationKeys.has(key))
+				);
+			} else {
+				stopHighlightLock();
+				clearRecommendationJoinCues();
+				state.lastHighlightRecommendation = null;
+				state.targetFeedback = null;
+				state.takenRecommendationKeys.clear();
+			}
 			state.lastPayload = nextPayload;
 			state.lastCheckedAt = checkedAt;
 			state.usingCachedPayload = false;
@@ -2141,7 +2199,9 @@
 			state.error = "";
 			scheduleAutoRefresh();
 			clearRecommendationHighlights();
-			void recordScriptAccess(state.profile, planner);
+			if (snapshot.status !== "unavailable") {
+				void recordScriptAccess(state.profile, planner);
+			}
 		} catch (error) {
 			state.error = getFriendlyErrorMessage(error);
 			state.progress = "";
@@ -2336,6 +2396,16 @@
 	const renderResults = () => {
 		const payload = state.lastPayload;
 		if (!payload) return "";
+		if (payload.noPlan) {
+			const unavailable = payload.noPlanReason === "unavailable";
+			return `
+				<div class="ocp-card no-plan">
+					<div class="ocp-card-title">${unavailable ? "OC Planner Unavailable" : "No Faction Plan Yet"}</div>
+					<div>${unavailable ? "OC Planner is not enabled or publicly available for your faction." : "Your faction does not have a saved OC Planner plan yet."}</div>
+					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
+				</div>
+			`;
+		}
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
 		const current = payload.recommendations.length ? currentStepCard(payload.recommendations[0]) : "";
@@ -2382,9 +2452,14 @@
 				: state.progress;
 		}
 		const payload = state.lastPayload;
+		const checkedAge = formatAge(state.lastCheckedAt);
+		if (payload?.noPlan) {
+			const availability = payload.noPlanReason === "unavailable" ? "Planner unavailable" : "No faction plan";
+			const source = state.usingCachedPayload ? "Cached" : "Checked";
+			return checkedAge ? `${source} ${checkedAge} | ${availability}` : availability;
+		}
 		if (!payload?.plannerGeneratedAt) return state.loading ? "Loading..." : "";
 		const planAge = formatAge(payload.plannerGeneratedAt);
-		const checkedAge = formatAge(state.lastCheckedAt);
 		if (state.usingCachedPayload) {
 			return checkedAge ? `Cached ${checkedAge} | Plan ${planAge || "saved"}` : `Cached | Plan ${planAge || "saved"}`;
 		}
