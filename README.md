@@ -33,3 +33,5 @@ It then filters the returned planner to the player who owns the API key. The che
 For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The full faction planner is not added to this local cache.
 
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
+
+Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel lists currently open roles where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.

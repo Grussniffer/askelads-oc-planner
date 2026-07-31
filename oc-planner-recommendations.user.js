@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.51
+// @version      0.2.52
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.51";
+	const SCRIPT_VERSION = "0.2.52";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -914,16 +914,29 @@
 				url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
 				label: "OC Planner snapshot request",
 			});
+			const recommendationPolicy = payload?.recommendationPolicy || {};
 			return {
 				planner: payload?.planner || null,
 				status: payload?.planner ? "ready" : "missing",
+				recommendationPolicy: {
+					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
+					cprRequirements:
+						recommendationPolicy.cprRequirements &&
+						typeof recommendationPolicy.cprRequirements === "object"
+							? recommendationPolicy.cprRequirements
+							: {},
+				},
 			};
 		} catch (error) {
 			if (
 				(Number(error?.status) === 401 || Number(error?.status) === 403) &&
 				["AUTH_REQUIRED", "MODULE_DISABLED"].includes(String(error?.code || ""))
 			) {
-				return { planner: null, status: "unavailable" };
+				return {
+					planner: null,
+					status: "unavailable",
+					recommendationPolicy: { mode: "plan", cprRequirements: {} },
+				};
 			}
 			throw error;
 		}
@@ -1927,17 +1940,35 @@
 			(member) => Number(member.memberId) === memberId
 		);
 
-	const getSlotCprBand = (slot) => {
-		const min = Number(slot?.minimumRecommendedCpr || 0);
-		const max = Number(slot?.maximumRecommendedCpr || 100);
+	const getSlotCprBand = (slot, crime, cprRequirements = {}) => {
+		const fallbackMin = Number(slot?.minimumRecommendedCpr || 0);
+		const fallbackMax = Number(slot?.maximumRecommendedCpr || 100);
+		const impact = ["high", "medium", "low", "unknown"].includes(slot?.roleImpactLabel)
+			? slot.roleImpactLabel
+			: "unknown";
+		const numericDifficulty = Number(crime?.difficulty || 0);
+		const difficulty = Number.isFinite(numericDifficulty) && numericDifficulty > 0
+			? String(Math.max(1, Math.min(10, Math.round(numericDifficulty))))
+			: "";
+		const configured = difficulty ? cprRequirements?.[impact]?.[difficulty] : null;
+		const configuredMin = Number(configured?.min);
+		const configuredMax = Number(configured?.max);
+		const min = Number.isFinite(configuredMin)
+			? configuredMin
+			: Number.isFinite(fallbackMin) ? fallbackMin : 0;
+		const max = Number.isFinite(configuredMax)
+			? configuredMax
+			: Number.isFinite(fallbackMax) && fallbackMax > 0 ? fallbackMax : 100;
+		const normalizedMin = Math.max(0, Math.min(100, min));
+		const normalizedMax = Math.max(0, Math.min(100, max));
 		return {
-			min: Number.isFinite(min) ? min : 0,
-			max: Number.isFinite(max) && max > 0 ? max : 100,
+			min: normalizedMin,
+			max: Math.max(normalizedMin, normalizedMax),
 		};
 	};
 
-	const formatCprBand = (slot) => {
-		const { min, max } = getSlotCprBand(slot);
+	const formatCprBand = (slot, crime, cprRequirements) => {
+		const { min, max } = getSlotCprBand(slot, crime, cprRequirements);
 		return max < 100 ? `${Math.round(min)}-${Math.round(max)}% CPR` : `${Math.round(min)}%+ CPR`;
 	};
 
@@ -1961,18 +1992,18 @@
 		return Number.isFinite(cpr) ? cpr : 0;
 	};
 
-	const memberFitsSlotBand = (cpr, slot) => {
-		const { min, max } = getSlotCprBand(slot);
+	const memberFitsSlotBand = (cpr, slot, crime, cprRequirements) => {
+		const { min, max } = getSlotCprBand(slot, crime, cprRequirements);
 		return cpr > 0 && cpr >= min && cpr <= max;
 	};
 
-	const findFlexibleSlots = (planner, memberId) => {
+	const findFlexibleSlots = (planner, memberId, cprRequirements) => {
 		const flexibleSlots = [];
 		for (const crime of planner?.crimes || []) {
 			for (const slot of crime.slots || []) {
 				if (!slot?.recommended?.anyFree || slot.currentUserId || slot.currentUserName) continue;
 				const cpr = getMemberCprForSlot(planner, memberId, crime, slot);
-				if (!memberFitsSlotBand(cpr, slot)) continue;
+				if (!memberFitsSlotBand(cpr, slot, crime, cprRequirements)) continue;
 				flexibleSlots.push({
 					crimeId: crime.id || slot.crimeId,
 					crimeName: crime.name || slot.crimeName || slot.recommended.cprCrimeName,
@@ -1981,7 +2012,7 @@
 					role: slot.role || slot.recommended.cprRoleName,
 					roleImpactLabel: slot.roleImpactLabel,
 					cpr,
-					cprBand: formatCprBand(slot),
+					cprBand: formatCprBand(slot, crime, cprRequirements),
 					successChance: crime.recommendedSuccessChance,
 				});
 			}
@@ -1995,6 +2026,49 @@
 		);
 	};
 
+	const findCprEligibility = (planner, memberId, cprRequirements) => {
+		const eligibleSlots = [];
+		let ineligibleCount = 0;
+		let missingCprCount = 0;
+		let openSlotCount = 0;
+
+		for (const crime of planner?.crimes || []) {
+			if (crime.openSlots !== undefined && Number(crime.openSlots) <= 0) continue;
+			for (const slot of crime.slots || []) {
+				if (slot.currentUserId || slot.currentUserName) continue;
+				openSlotCount += 1;
+				const cpr = getMemberCprForSlot(planner, memberId, crime, slot);
+				if (!(cpr > 0)) {
+					missingCprCount += 1;
+					continue;
+				}
+				if (!memberFitsSlotBand(cpr, slot, crime, cprRequirements)) {
+					ineligibleCount += 1;
+					continue;
+				}
+				eligibleSlots.push({
+					crimeId: crime.id || slot.crimeId,
+					crimeName: crime.name || slot.crimeName,
+					difficulty: crime.difficulty,
+					position: slot.position,
+					role: slot.role,
+					roleImpactLabel: slot.roleImpactLabel,
+					cpr,
+					cprBand: formatCprBand(slot, crime, cprRequirements),
+					successChance: crime.recommendedSuccessChance,
+				});
+			}
+		}
+
+		eligibleSlots.sort(
+			(a, b) =>
+				(a.difficulty || 0) - (b.difficulty || 0) ||
+				String(a.crimeName || "").localeCompare(String(b.crimeName || "")) ||
+				String(a.position || "").localeCompare(String(b.position || ""))
+		);
+		return { eligibleSlots, ineligibleCount, missingCprCount, openSlotCount };
+	};
+
 	const getProfileMemberIdentity = (profile) => {
 		const memberId = Number(profile?.player_id || profile?.profile?.player_id || 0);
 		const memberName =
@@ -2006,12 +2080,21 @@
 		return { memberId, memberName };
 	};
 
-	const buildMemberPayload = (profile, planner) => {
+	const buildMemberPayload = (profile, planner, recommendationPolicy = {}) => {
 		const { memberId, memberName } = getProfileMemberIdentity(profile);
-		const recommendations = findSlotRecommendations(planner, memberId);
-		const planningSteps = findPlanningSteps(planner, memberId);
-		const unassigned = findUnassigned(planner, memberId);
-		const flexibleSlots = findFlexibleSlots(planner, memberId);
+		const recommendationMode = recommendationPolicy.mode === "cpr" ? "cpr" : "plan";
+		const cprRequirements = recommendationPolicy.cprRequirements || {};
+		const recommendations = recommendationMode === "plan"
+			? findSlotRecommendations(planner, memberId)
+			: [];
+		const planningSteps = recommendationMode === "plan" ? findPlanningSteps(planner, memberId) : [];
+		const unassigned = recommendationMode === "plan" ? findUnassigned(planner, memberId) : [];
+		const flexibleSlots = recommendationMode === "plan"
+			? findFlexibleSlots(planner, memberId, cprRequirements)
+			: [];
+		const cprEligibility = recommendationMode === "cpr"
+			? findCprEligibility(planner, memberId, cprRequirements)
+			: { eligibleSlots: [], ineligibleCount: 0, missingCprCount: 0, openSlotCount: 0 };
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
@@ -2020,6 +2103,7 @@
 			memberId,
 			memberName,
 			noPlan: false,
+			recommendationMode,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			recommendations,
@@ -2027,15 +2111,20 @@
 			planningSteps,
 			unassigned,
 			flexibleSlots,
+			cprEligibleSlots: cprEligibility.eligibleSlots,
+			cprIneligibleCount: cprEligibility.ineligibleCount,
+			cprMissingCount: cprEligibility.missingCprCount,
+			cprOpenSlotCount: cprEligibility.openSlotCount,
 			missingCpr,
 			warnings: planner?.warnings || [],
 		};
 	};
 
-	const buildNoPlanPayload = (profile, noPlanReason) => ({
+	const buildNoPlanPayload = (profile, noPlanReason, recommendationPolicy = {}) => ({
 		...getProfileMemberIdentity(profile),
 		noPlan: true,
 		noPlanReason: noPlanReason || "missing",
+		recommendationMode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
 		plannerGeneratedAt: null,
 		summary: null,
 		recommendations: [],
@@ -2043,6 +2132,10 @@
 		planningSteps: [],
 		unassigned: [],
 		flexibleSlots: [],
+		cprEligibleSlots: [],
+		cprIneligibleCount: 0,
+		cprMissingCount: 0,
+		cprOpenSlotCount: 0,
 		missingCpr: false,
 		warnings: [],
 	});
@@ -2172,8 +2265,8 @@
 			const checkedAt = Math.floor(Date.now() / 1000);
 			state.lastPlanner = planner;
 			const nextPayload = planner
-				? buildMemberPayload(state.profile, planner)
-				: buildNoPlanPayload(state.profile, snapshot.status);
+				? buildMemberPayload(state.profile, planner, snapshot.recommendationPolicy)
+				: buildNoPlanPayload(state.profile, snapshot.status, snapshot.recommendationPolicy);
 			const nextRecommendationKeys = new Set(
 				nextPayload.recommendations.map(getRecommendationKey)
 			);
@@ -2355,9 +2448,10 @@
 		`;
 	};
 
-	const flexibleSlotCard = (slot) => {
+	const flexibleSlotCard = (slot, cprMode = false) => {
 		const crimeUrl = getCrimeUrl(slot.crimeId);
 		const successChance = formatChance(slot.successChance);
+		const linkLabel = cprMode ? "Find eligible role" : `View role in OC #${slot.crimeId}`;
 		const meta = [
 			slot.difficulty ? `T${slot.difficulty}` : "",
 			slot.cpr ? `${Math.round(Number(slot.cpr || 0))}% CPR` : "",
@@ -2373,9 +2467,10 @@
 				<div class="ocp-card-heading">
 					<span>${escapeHtml(compactCrimeLabel(slot.crimeName, slot.crimeId))}</span>
 					<span class="ocp-muted">${escapeHtml(slot.position || slot.role || "Slot")}</span>
+					${cprMode ? `<span class="ocp-pill">Eligible by CPR</span>` : ""}
 				</div>
 				${meta ? `<div class="ocp-mini-meta">${meta}</div>` : ""}
-				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-crime-name="${escapeHtml(slot.crimeName || "")}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">View role in OC #${escapeHtml(slot.crimeId)}</a>
+				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-crime-name="${escapeHtml(slot.crimeName || "")}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">${escapeHtml(linkLabel)}</a>
 			</div>
 		`;
 	};
@@ -2393,18 +2488,59 @@
 		</div>
 	`;
 
+	const renderCprEligibilityResults = (payload) => {
+		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
+			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
+		);
+		const eligibleItems = eligibleSlots.map((slot) => flexibleSlotCard(slot, true)).join("");
+		const unavailableCount = Number(payload.cprIneligibleCount || 0);
+		const missingCount = Number(payload.cprMissingCount || 0);
+		const summary = eligibleSlots.length
+			? `<strong>${eligibleSlots.length} open role${eligibleSlots.length === 1 ? "" : "s"}</strong> match your faction's hard CPR requirements.`
+			: payload.cprOpenSlotCount
+				? "No currently open role matches your faction's CPR requirements."
+				: "No open role is currently available in the saved OC snapshot.";
+		const exclusions = [
+			unavailableCount ? `${unavailableCount} outside your CPR limits` : "",
+			missingCount ? `${missingCount} missing role CPR` : "",
+		]
+			.filter(Boolean)
+			.map((item) => `<span>${escapeHtml(item)}</span>`)
+			.join("");
+
+		return `
+			<div class="ocp-card next">
+				<div class="ocp-card-title">CPR Eligibility Mode</div>
+				<div>${summary}</div>
+				<div class="ocp-muted">Eligible means allowed by CPR, not assigned or reserved. The role is checked live when you open it.</div>
+				${exclusions ? `<div class="ocp-mini-meta">${exclusions}</div>` : ""}
+			</div>
+			${eligibleItems ? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
+				<summary>CPR-eligible openings (${eligibleSlots.length})</summary>
+				<div class="ocp-flexible-body">
+					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Confirm the role is still open in Torn before joining.</div>
+					${eligibleItems}
+				</div>
+			</details>` : ""}
+		`;
+	};
+
 	const renderResults = () => {
 		const payload = state.lastPayload;
 		if (!payload) return "";
 		if (payload.noPlan) {
 			const unavailable = payload.noPlanReason === "unavailable";
+			const cprMode = payload.recommendationMode === "cpr";
 			return `
 				<div class="ocp-card no-plan">
 					<div class="ocp-card-title">${unavailable ? "OC Planner Unavailable" : "No Faction Plan Yet"}</div>
 					<div>${unavailable ? "OC Planner is not enabled or publicly available for your faction." : "Your faction does not have a saved OC Planner plan yet."}</div>
-					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
+					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : cprMode ? "CPR mode still needs a saved snapshot of current OCs and member CPR." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
 				</div>
 			`;
+		}
+		if (payload.recommendationMode === "cpr") {
+			return renderCprEligibilityResults(payload);
 		}
 
 		const cards = payload.recommendations.map(recommendationCard).join("");
@@ -2453,17 +2589,18 @@
 		}
 		const payload = state.lastPayload;
 		const checkedAge = formatAge(state.lastCheckedAt);
+		const modeSuffix = payload?.recommendationMode === "cpr" ? " | CPR" : "";
 		if (payload?.noPlan) {
 			const availability = payload.noPlanReason === "unavailable" ? "Planner unavailable" : "No faction plan";
 			const source = state.usingCachedPayload ? "Cached" : "Checked";
-			return checkedAge ? `${source} ${checkedAge} | ${availability}` : availability;
+			return checkedAge ? `${source} ${checkedAge} | ${availability}${modeSuffix}` : `${availability}${modeSuffix}`;
 		}
 		if (!payload?.plannerGeneratedAt) return state.loading ? "Loading..." : "";
 		const planAge = formatAge(payload.plannerGeneratedAt);
 		if (state.usingCachedPayload) {
-			return checkedAge ? `Cached ${checkedAge} | Plan ${planAge || "saved"}` : `Cached | Plan ${planAge || "saved"}`;
+			return checkedAge ? `Cached ${checkedAge} | Plan ${planAge || "saved"}${modeSuffix}` : `Cached | Plan ${planAge || "saved"}${modeSuffix}`;
 		}
-		return checkedAge ? `Checked ${checkedAge} | Plan ${planAge || "saved"}` : `Plan ${planAge || "saved"}`;
+		return checkedAge ? `Checked ${checkedAge} | Plan ${planAge || "saved"}${modeSuffix}` : `Plan ${planAge || "saved"}${modeSuffix}`;
 	};
 
 	const render = () => {
@@ -2529,7 +2666,7 @@
 					<table>
 						<tr><th>Data storage</th><td>API key, profile cache, and your last filtered recommendation are stored locally by your userscript manager or Torn PDA.</td></tr>
 						<tr><th>Data sharing</th><td>Your key is sent to Torn's official API for profile lookup. It is not sent to the OC Planner backend.</td></tr>
-						<tr><th>Purpose of use</th><td>Show your own OC Planner recommendation on the faction crimes page.</td></tr>
+						<tr><th>Purpose of use</th><td>Show your planner assignment or the open roles allowed by your faction's CPR policy.</td></tr>
 						<tr><th>Key storage and sharing</th><td>Stored locally only. The userscript never asks the backend to save your key.</td></tr>
 						<tr><th>Required access</th><td>Enough access for Torn profile lookup. OC data is fetched from the backend's latest saved planner snapshot.</td></tr>
 					</table>
