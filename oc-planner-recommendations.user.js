@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.53
+// @version      0.2.54
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.53";
+	const SCRIPT_VERSION = "0.2.54";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -428,7 +428,7 @@
 		.${JOIN_CUE_BADGE_CLASS} {
 			display: inline-flex;
 			align-items: center;
-			max-width: min(240px, 55vw);
+			max-width: min(340px, 65vw);
 			margin-left: 7px;
 			padding: 2px 6px;
 			border: 1px solid #b88725;
@@ -916,14 +916,27 @@
 			});
 			const recommendationPolicy = payload?.recommendationPolicy || {};
 			const plannerRefreshRequired = recommendationPolicy.plannerRefreshRequired === true;
+			const runtimeStatus = String(recommendationPolicy.runtimeStatus || "");
 			return {
 				planner: payload?.planner || null,
-				status: plannerRefreshRequired ? "refreshing" : payload?.planner ? "ready" : "missing",
+				status: plannerRefreshRequired
+					? runtimeStatus === "plan_failed"
+						? "failed"
+						: runtimeStatus === "plan_stale" ? "stale" : "refreshing"
+					: payload?.planner ? "ready" : "missing",
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
 					plannerGenerationEnabled: recommendationPolicy.plannerGenerationEnabled !== false,
 					plannerRefreshRequired,
 					updatedAt: recommendationPolicy.updatedAt || null,
+					runtimeStatus,
+					runtimeMessage: String(recommendationPolicy.runtimeMessage || ""),
+					runtimeError: String(recommendationPolicy.runtimeError || ""),
+					snapshotSource: String(recommendationPolicy.snapshotSource || ""),
+					snapshotGeneratedAt: recommendationPolicy.snapshotGeneratedAt || null,
+					cprSnapshotStatus: String(recommendationPolicy.cprSnapshotStatus || ""),
+					cprSnapshotGeneratedAt: recommendationPolicy.cprSnapshotGeneratedAt || null,
+					cprSnapshotError: String(recommendationPolicy.cprSnapshotError || ""),
 					cprRequirements:
 						recommendationPolicy.cprRequirements &&
 						typeof recommendationPolicy.cprRequirements === "object"
@@ -1493,21 +1506,23 @@
 	const getRecommendationJoinCue = (recommendations, index) => {
 		const recommendation = recommendations[index];
 		if (!recommendation) return "";
+		const role = recommendation.position || recommendation.role || "assigned role";
+		const prefix = `Join as ${role}`;
 		if (index === 0) {
 			if (recommendation.currentCrimeName) {
-				return `Join after ${recommendation.currentCrimeName}`;
+				return `${prefix} after ${recommendation.currentCrimeName}`;
 			}
 			if (
 				recommendation.availableAt &&
 				recommendation.availableAt > Math.floor(Date.now() / 1000)
 			) {
-				return "Join when free";
+				return `${prefix} when free`;
 			}
-			return "Join now";
+			return `${prefix} now`;
 		}
 
 		const previous = recommendations[index - 1];
-		return `Join after ${previous?.crimeName || `OC #${previous?.crimeId || "?"}`}`;
+		return `${prefix} after ${previous?.crimeName || `OC #${previous?.crimeId || "?"}`}`;
 	};
 
 	const getRecommendationKey = (recommendation) =>
@@ -2042,6 +2057,8 @@
 		let openSlotCount = 0;
 
 		for (const crime of planner?.crimes || []) {
+			const crimeStatus = String(crime.status || "").trim().toLowerCase();
+			if (crimeStatus && crimeStatus !== "recruiting") continue;
 			if (crime.openSlots !== undefined && Number(crime.openSlots) <= 0) continue;
 			for (const slot of crime.slots || []) {
 				if (slot.currentUserId || slot.currentUserName) continue;
@@ -2089,6 +2106,17 @@
 		return { memberId, memberName };
 	};
 
+	const getRecommendationPolicyStatus = (recommendationPolicy = {}) => ({
+		runtimeStatus: String(recommendationPolicy.runtimeStatus || ""),
+		runtimeMessage: String(recommendationPolicy.runtimeMessage || ""),
+		runtimeError: String(recommendationPolicy.runtimeError || ""),
+		snapshotSource: String(recommendationPolicy.snapshotSource || ""),
+		snapshotGeneratedAt: recommendationPolicy.snapshotGeneratedAt || null,
+		cprSnapshotStatus: String(recommendationPolicy.cprSnapshotStatus || ""),
+		cprSnapshotGeneratedAt: recommendationPolicy.cprSnapshotGeneratedAt || null,
+		cprSnapshotError: String(recommendationPolicy.cprSnapshotError || ""),
+	});
+
 	const buildMemberPayload = (profile, planner, recommendationPolicy = {}) => {
 		const { memberId, memberName } = getProfileMemberIdentity(profile);
 		const recommendationMode = recommendationPolicy.mode === "cpr" ? "cpr" : "plan";
@@ -2113,6 +2141,7 @@
 			memberName,
 			noPlan: false,
 			recommendationMode,
+			...getRecommendationPolicyStatus(recommendationPolicy),
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			recommendations,
@@ -2134,6 +2163,7 @@
 		noPlan: true,
 		noPlanReason: noPlanReason || "missing",
 		recommendationMode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
+		...getRecommendationPolicyStatus(recommendationPolicy),
 		plannerGeneratedAt: null,
 		summary: null,
 		recommendations: [],
@@ -2499,6 +2529,22 @@
 		</div>
 	`;
 
+	const renderCprSnapshotStatus = (payload) => {
+		const snapshotAge = formatAge(payload.cprSnapshotGeneratedAt || payload.snapshotGeneratedAt);
+		if (payload.snapshotSource === "plan_fallback") {
+			return '<div class="ocp-flexible-note ocp-muted"><strong>Refreshing CPR data.</strong> Using the last saved OC snapshot for now; confirm the role in Torn.</div>';
+		}
+		if (payload.cprSnapshotStatus === "failed") {
+			return `<div class="ocp-flexible-note ocp-muted"><strong>Latest CPR data refresh failed.</strong>${snapshotAge ? ` Showing data checked ${escapeHtml(snapshotAge)}.` : " Confirm roles directly in Torn."}</div>`;
+		}
+		if (payload.cprSnapshotStatus === "refreshing") {
+			return `<div class="ocp-flexible-note ocp-muted"><strong>Refreshing OC and CPR data.</strong>${snapshotAge ? ` Current data was checked ${escapeHtml(snapshotAge)}.` : ""}</div>`;
+		}
+		return snapshotAge
+			? `<div class="ocp-flexible-note ocp-muted">OC and CPR data checked ${escapeHtml(snapshotAge)}.</div>`
+			: "";
+	};
+
 	const renderCprEligibilityResults = (payload) => {
 		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
 			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
@@ -2518,12 +2564,14 @@
 			.filter(Boolean)
 			.map((item) => `<span>${escapeHtml(item)}</span>`)
 			.join("");
+		const snapshotStatus = renderCprSnapshotStatus(payload);
 
 		return `
 			<div class="ocp-card next">
 				<div class="ocp-card-title">CPR Eligibility Mode</div>
 				<div>${summary}</div>
 				<div class="ocp-muted">Eligible means allowed by CPR, not assigned or reserved. The role is checked live when you open it.</div>
+				${snapshotStatus}
 				${exclusions ? `<div class="ocp-mini-meta">${exclusions}</div>` : ""}
 			</div>
 			${eligibleItems ? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
@@ -2536,18 +2584,68 @@
 		`;
 	};
 
+	const getNoPlanCopy = (payload) => {
+		if (payload.noPlanReason === "unavailable") {
+			return {
+				title: "OC Planner Unavailable",
+				message: "OC Planner is not enabled or publicly available for your faction.",
+				guidance: "A faction admin can enable OC Planner before recommendations can be shown.",
+			};
+		}
+		if (payload.recommendationMode === "cpr" && payload.cprSnapshotStatus === "refreshing") {
+			return {
+				title: "Loading CPR Data",
+				message: "The first lightweight OC and CPR snapshot is being prepared.",
+				guidance: "Recommendations will appear as soon as the snapshot is ready.",
+			};
+		}
+		if (payload.recommendationMode === "cpr" && payload.cprSnapshotStatus === "failed") {
+			return {
+				title: "CPR Data Unavailable",
+				message: "The lightweight OC and CPR snapshot could not be refreshed.",
+				guidance: "The backend will retry automatically; a faction planner admin can check the planner status.",
+			};
+		}
+		if (payload.noPlanReason === "failed" || payload.runtimeStatus === "plan_failed") {
+			return {
+				title: "Plan Generation Failed",
+				message: "The backend could not generate the required fresh complete plan.",
+				guidance: "A faction planner admin can retry from the planner controls.",
+			};
+		}
+		if (payload.noPlanReason === "stale" || payload.runtimeStatus === "plan_stale") {
+			return {
+				title: "Fresh Plan Required",
+				message: "Planner settings changed after the last complete plan.",
+				guidance: "A faction planner admin needs to refresh the planner before assignments can be shown.",
+			};
+		}
+		if (payload.noPlanReason === "refreshing") {
+			return {
+				title: "Fresh Plan Required",
+				message: "Complete plan was enabled and the required fresh plan is being generated.",
+				guidance: "Old assignments are hidden until the new plan is ready.",
+			};
+		}
+		return {
+			title: "No Faction Plan Yet",
+			message: "Your faction does not have a saved OC Planner plan yet.",
+			guidance: payload.recommendationMode === "cpr"
+				? "CPR mode still needs a snapshot of current OCs and member CPR."
+				: "Ask a faction planner admin to generate the first plan.",
+		};
+	};
+
 	const renderResults = () => {
 		const payload = state.lastPayload;
 		if (!payload) return "";
 		if (payload.noPlan) {
-			const unavailable = payload.noPlanReason === "unavailable";
-			const refreshing = payload.noPlanReason === "refreshing";
-			const cprMode = payload.recommendationMode === "cpr";
+			const copy = getNoPlanCopy(payload);
 			return `
 				<div class="ocp-card no-plan">
-					<div class="ocp-card-title">${unavailable ? "OC Planner Unavailable" : refreshing ? "Fresh Plan Required" : "No Faction Plan Yet"}</div>
-					<div>${unavailable ? "OC Planner is not enabled or publicly available for your faction." : refreshing ? "Complete plan was enabled and the required fresh plan is being generated." : "Your faction does not have a saved OC Planner plan yet."}</div>
-					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : refreshing ? "Old assignments are hidden until the new plan is ready." : cprMode ? "CPR mode still needs a saved snapshot of current OCs and member CPR." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
+					<div class="ocp-card-title">${copy.title}</div>
+					<div>${copy.message}</div>
+					<div class="ocp-muted">${copy.guidance} This script will keep checking automatically.</div>
 				</div>
 			`;
 		}
@@ -2601,18 +2699,24 @@
 		}
 		const payload = state.lastPayload;
 		const checkedAge = formatAge(state.lastCheckedAt);
-		const modeSuffix = payload?.recommendationMode === "cpr" ? " | CPR" : "";
+		const cprMode = payload?.recommendationMode === "cpr";
+		const modeSuffix = cprMode ? " | CPR" : "";
 		if (payload?.noPlan) {
-			const availability = payload.noPlanReason === "unavailable" ? "Planner unavailable" : "No faction plan";
+			const availability = payload.noPlanReason === "unavailable"
+				? "Planner unavailable"
+				: payload.noPlanReason === "failed"
+					? "Generation failed"
+					: payload.noPlanReason === "stale" ? "Fresh plan needed" : "No faction plan";
 			const source = state.usingCachedPayload ? "Cached" : "Checked";
 			return checkedAge ? `${source} ${checkedAge} | ${availability}${modeSuffix}` : `${availability}${modeSuffix}`;
 		}
 		if (!payload?.plannerGeneratedAt) return state.loading ? "Loading..." : "";
 		const planAge = formatAge(payload.plannerGeneratedAt);
+		const dataLabel = cprMode ? "OC data" : "Plan";
 		if (state.usingCachedPayload) {
-			return checkedAge ? `Cached ${checkedAge} | Plan ${planAge || "saved"}${modeSuffix}` : `Cached | Plan ${planAge || "saved"}${modeSuffix}`;
+			return checkedAge ? `Cached ${checkedAge} | ${dataLabel} ${planAge || "saved"}${modeSuffix}` : `Cached | ${dataLabel} ${planAge || "saved"}${modeSuffix}`;
 		}
-		return checkedAge ? `Checked ${checkedAge} | Plan ${planAge || "saved"}${modeSuffix}` : `Plan ${planAge || "saved"}${modeSuffix}`;
+		return checkedAge ? `Checked ${checkedAge} | ${dataLabel} ${planAge || "saved"}${modeSuffix}` : `${dataLabel} ${planAge || "saved"}${modeSuffix}`;
 	};
 
 	const render = () => {

@@ -25,7 +25,7 @@ On Torn PDA, the script falls back to PDA's `PDA_httpGet`/`PDA_httpPost` helpers
 The script uses userscript HTTPS requests:
 
 - Torn API `user/?selections=profile` to identify the player who owns the key
-- Backend `GET /api/oc-planner/bot-alerts` to fetch the latest saved OC planner snapshot
+- Backend `GET /api/oc-planner/bot-alerts` to fetch the latest complete-plan or CPR eligibility snapshot
 - Backend `POST /api/oc-planner/script-access` to record that this player checked the planner
 
 It then filters the returned planner to the player who owns the API key. The check-in sends player id, player name, faction id, script version, and planner timestamp/run id. It does not send the Torn API key. The userscript loads on Torn's `factions.php` page, but the panel only activates on the faction organized crimes tab.
@@ -34,6 +34,8 @@ For faster startup, the script stores only that player's filtered recommendation
 
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
 
-Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel lists currently open roles where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
+Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel lists recruiting roles where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
 
-CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. Switching back to complete-plan mode requires and immediately starts a fresh plan; the userscript hides retained old assignments until that new plan has been saved.
+CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. A separate lightweight OC and CPR snapshot refreshes every 30 minutes without running the assignment optimizer or replacing the last complete plan. While the first lightweight refresh is running, the userscript can temporarily use the last complete-plan snapshot and labels that fallback clearly.
+
+Switching back to complete-plan mode starts a fresh backend generation immediately. Its generating, ready, stale, or failed state survives closing the admin page, and the userscript hides retained old assignments until the new plan has been saved.
