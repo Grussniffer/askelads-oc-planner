@@ -35,3 +35,5 @@ For faster startup, the script stores only that player's filtered recommendation
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
 
 Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel lists currently open roles where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
+
+CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. Switching back to complete-plan mode requires and immediately starts a fresh plan; the userscript hides retained old assignments until that new plan has been saved.

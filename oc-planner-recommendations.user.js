@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.52
+// @version      0.2.53
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.52";
+	const SCRIPT_VERSION = "0.2.53";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -915,11 +915,15 @@
 				label: "OC Planner snapshot request",
 			});
 			const recommendationPolicy = payload?.recommendationPolicy || {};
+			const plannerRefreshRequired = recommendationPolicy.plannerRefreshRequired === true;
 			return {
 				planner: payload?.planner || null,
-				status: payload?.planner ? "ready" : "missing",
+				status: plannerRefreshRequired ? "refreshing" : payload?.planner ? "ready" : "missing",
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
+					plannerGenerationEnabled: recommendationPolicy.plannerGenerationEnabled !== false,
+					plannerRefreshRequired,
+					updatedAt: recommendationPolicy.updatedAt || null,
 					cprRequirements:
 						recommendationPolicy.cprRequirements &&
 						typeof recommendationPolicy.cprRequirements === "object"
@@ -935,7 +939,12 @@
 				return {
 					planner: null,
 					status: "unavailable",
-					recommendationPolicy: { mode: "plan", cprRequirements: {} },
+					recommendationPolicy: {
+						mode: "plan",
+						plannerGenerationEnabled: true,
+						plannerRefreshRequired: false,
+						cprRequirements: {},
+					},
 				};
 			}
 			throw error;
@@ -2261,7 +2270,9 @@
 			render();
 
 			const snapshot = await getLatestPlanner(getPlannerFactionId(state.profile));
-			const planner = snapshot.planner;
+			const planner = snapshot.recommendationPolicy.plannerRefreshRequired
+				? null
+				: snapshot.planner;
 			const checkedAt = Math.floor(Date.now() / 1000);
 			state.lastPlanner = planner;
 			const nextPayload = planner
@@ -2530,12 +2541,13 @@
 		if (!payload) return "";
 		if (payload.noPlan) {
 			const unavailable = payload.noPlanReason === "unavailable";
+			const refreshing = payload.noPlanReason === "refreshing";
 			const cprMode = payload.recommendationMode === "cpr";
 			return `
 				<div class="ocp-card no-plan">
-					<div class="ocp-card-title">${unavailable ? "OC Planner Unavailable" : "No Faction Plan Yet"}</div>
-					<div>${unavailable ? "OC Planner is not enabled or publicly available for your faction." : "Your faction does not have a saved OC Planner plan yet."}</div>
-					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : cprMode ? "CPR mode still needs a saved snapshot of current OCs and member CPR." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
+					<div class="ocp-card-title">${unavailable ? "OC Planner Unavailable" : refreshing ? "Fresh Plan Required" : "No Faction Plan Yet"}</div>
+					<div>${unavailable ? "OC Planner is not enabled or publicly available for your faction." : refreshing ? "Complete plan was enabled and the required fresh plan is being generated." : "Your faction does not have a saved OC Planner plan yet."}</div>
+					<div class="ocp-muted">${unavailable ? "A faction admin can enable OC Planner before recommendations can be shown." : refreshing ? "Old assignments are hidden until the new plan is ready." : cprMode ? "CPR mode still needs a saved snapshot of current OCs and member CPR." : "Ask a faction planner admin to generate the first plan."} This script will keep checking automatically.</div>
 				</div>
 			`;
 		}
