@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.54
+// @version      0.2.55
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -26,7 +26,7 @@
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
 	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.54";
+	const SCRIPT_VERSION = "0.2.55";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -182,7 +182,8 @@
 			font-weight: 700;
 			color: #e9cc87;
 		}
-		#${PANEL_ID} .ocp-target-feedback.found {
+		#${PANEL_ID} .ocp-target-feedback.found,
+		#${PANEL_ID} .ocp-target-feedback.joined {
 			color: #aee3a5;
 		}
 		#${PANEL_ID} .ocp-target-feedback.filled,
@@ -438,7 +439,26 @@
 			font: 700 11px/1.2 Arial, Helvetica, sans-serif;
 			vertical-align: middle;
 			white-space: normal;
-			pointer-events: none;
+			cursor: help;
+			pointer-events: auto;
+			user-select: none;
+		}
+		.${JOIN_CUE_BADGE_CLASS}.opening {
+			border-color: #6f8fb5;
+			background: rgba(18, 39, 61, 0.94);
+			color: #cde4ff;
+		}
+		.${JOIN_CUE_BADGE_CLASS}.found,
+		.${JOIN_CUE_BADGE_CLASS}.joined {
+			border-color: #5d9b54;
+			background: rgba(22, 55, 24, 0.94);
+			color: #c9f3c1;
+		}
+		.${JOIN_CUE_BADGE_CLASS}.filled,
+		.${JOIN_CUE_BADGE_CLASS}.missing {
+			border-color: #a54e43;
+			background: rgba(65, 24, 20, 0.95);
+			color: #ffc4b9;
 		}
 		#${PANEL_ID} .ocp-card.need-more {
 			border-color: #8d6c25;
@@ -1530,6 +1550,113 @@
 			recommendation?.position || recommendation?.role
 		)}`;
 
+	const getRecommendationBadgeState = (recommendations, index, crimeElement) => {
+		const recommendation = recommendations[index];
+		const role = recommendation?.position || recommendation?.role || "assigned role";
+		const roleElement = findRoleElement(crimeElement, recommendation);
+		const availability = roleElement ? inspectRoleAvailability(roleElement) : null;
+
+		if (availability?.kind === "joined") {
+			return {
+				kind: "joined",
+				label: `Joined as ${role}`,
+				status: "You are already in this role",
+			};
+		}
+		if (availability?.kind === "filled") {
+			return {
+				kind: "filled",
+				label: `Role filled: ${role}`,
+				status: availability.occupant?.name
+					? `Filled by ${availability.occupant.name}`
+					: "Filled by another player",
+			};
+		}
+
+		const isHighlightedTarget =
+			getRecommendationKey(state.lastHighlightRecommendation) ===
+			getRecommendationKey(recommendation);
+		const feedbackKind = isHighlightedTarget ? state.targetFeedback?.kind : "";
+		if (feedbackKind === "opening") {
+			return { kind: "opening", label: `Opening: ${role}`, status: "Opening exact OC" };
+		}
+		if (feedbackKind === "found") {
+			return { kind: "found", label: `Role found: ${role}`, status: "Exact OC and role found" };
+		}
+		if (feedbackKind === "joined") {
+			return { kind: "joined", label: `Joined as ${role}`, status: "You are already in this role" };
+		}
+		if (feedbackKind === "filled") {
+			return { kind: "filled", label: `Role filled: ${role}`, status: "Role already filled" };
+		}
+		if (feedbackKind === "missing") {
+			return { kind: "missing", label: `Could not find: ${role}`, status: "Exact OC or role not found" };
+		}
+
+		return {
+			kind: "planned",
+			label: getRecommendationJoinCue(recommendations, index),
+			status: "Planned assignment",
+		};
+	};
+
+	const getRecommendationTooltip = (recommendations, index, badgeState) => {
+		const recommendation = recommendations[index];
+		if (!recommendation) return "";
+		const phase = index === 0 ? "Next" : "Then";
+		const crimeName = recommendation.crimeName || "Organized crime";
+		const crimeId = recommendation.crimeId || "?";
+		const role = recommendation.position || recommendation.role || "assigned role";
+		const lines = [
+			`${phase} assignment`,
+			`Target: ${crimeName} (OC #${crimeId})`,
+			`Role: ${role}`,
+		];
+
+		if (index === 0 && recommendation.currentCrimeName) {
+			const currentId = recommendation.currentCrimeId
+				? ` (OC #${recommendation.currentCrimeId})`
+				: "";
+			lines.push(`After: ${recommendation.currentCrimeName}${currentId}`);
+		} else if (index > 0) {
+			const previous = recommendations[index - 1];
+			lines.push(
+				`After: ${previous?.crimeName || "previous assignment"}${
+					previous?.crimeId ? ` (OC #${previous.crimeId})` : ""
+				}`
+			);
+		} else if (
+			recommendation.availableAt &&
+			recommendation.availableAt > Math.floor(Date.now() / 1000)
+		) {
+			lines.push(`Available: ${formatTimestamp(recommendation.availableAt)}`);
+		} else {
+			lines.push("Available: now");
+		}
+
+		if (recommendation.plannedJoinAt) {
+			lines.push(`Planned join: ${formatTimestamp(recommendation.plannedJoinAt)}`);
+		}
+		if (recommendation.plannedStartAt) {
+			lines.push(`Planned start: ${formatTimestamp(recommendation.plannedStartAt)}`);
+		}
+		lines.push(`Status: ${badgeState.status}`);
+		return lines.join("\n");
+	};
+
+	const updateRecommendationJoinCue = (badge, item, recommendations, crimeElement) => {
+		const badgeState = getRecommendationBadgeState(
+			recommendations,
+			item.index,
+			crimeElement
+		);
+		const className = `${JOIN_CUE_BADGE_CLASS} ${badgeState.kind}`;
+		const title = getRecommendationTooltip(recommendations, item.index, badgeState);
+		if (badge.className !== className) badge.className = className;
+		if (badge.textContent !== badgeState.label) badge.textContent = badgeState.label;
+		if (badge.title !== title) badge.title = title;
+	};
+
 	const findCrimeTitleElement = (crimeElement, crimeName) => {
 		const target = normalizeText(crimeName);
 		if (!crimeElement || !target) return null;
@@ -1563,8 +1690,7 @@
 			if (!crimeId || desired.has(crimeId)) return;
 			desired.set(crimeId, {
 				recommendation,
-				label: getRecommendationJoinCue(recommendations, index),
-				phase: index === 0 ? "Next" : "Then",
+				index,
 			});
 		});
 
@@ -1576,8 +1702,12 @@
 				badge.remove();
 				return;
 			}
-			badge.textContent = item.label;
-			badge.title = `${item.phase}: ${item.label}`;
+			const crimeElement = findCrimeElement(crimeId, item.recommendation, false);
+			if (!crimeElement) {
+				badge.remove();
+				return;
+			}
+			updateRecommendationJoinCue(badge, item, recommendations, crimeElement);
 			existingByCrimeId.set(crimeId, badge);
 		});
 
@@ -1593,8 +1723,7 @@
 			const badge = document.createElement("span");
 			badge.className = JOIN_CUE_BADGE_CLASS;
 			badge.dataset.ocpCrimeId = crimeId;
-			badge.textContent = item.label;
-			badge.title = `${item.phase}: ${item.label}`;
+			updateRecommendationJoinCue(badge, item, recommendations, crimeElement);
 			titleElement.appendChild(badge);
 		}
 	};
@@ -1621,6 +1750,7 @@
 	const setTargetFeedback = (kind, label, detail = "") => {
 		state.targetFeedback = label ? { kind, label, detail } : null;
 		syncTargetFeedbackElement();
+		window.setTimeout(syncRecommendationJoinCues, 0);
 	};
 
 	const setRecommendationTaken = (recommendation, taken) => {
@@ -1657,6 +1787,7 @@
 				(occupant.id && memberId && occupant.id === memberId) ||
 				(occupant.name && memberName && normalizeText(occupant.name) === memberName);
 			if (!isYou) return { kind: "filled", occupant };
+			return { kind: "joined", occupant };
 		}
 
 		return { kind: "found", occupant };
@@ -1737,13 +1868,17 @@
 		if (!pending) return;
 		const result = highlightRecommendation(pending.recommendation);
 		if (result.roleFound) {
-			const filled = result.availability?.kind === "filled";
+			const availabilityKind = result.availability?.kind || "found";
+			const filled = availabilityKind === "filled";
+			const joined = availabilityKind === "joined";
 			setRecommendationTaken(pending.recommendation, filled);
 			setTargetFeedback(
-				filled ? "filled" : "found",
-				filled ? "Role already filled" : "Role found",
+				filled ? "filled" : joined ? "joined" : "found",
+				filled ? "Role already filled" : joined ? "Already joined" : "Role found",
 				filled && result.availability?.occupant?.name
 					? `${pending.recommendation.position || pending.recommendation.role || "Role"} is occupied by ${result.availability.occupant.name}. Tap the planner for other suitable openings.`
+					: joined
+						? `You are already in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} as ${pending.recommendation.position || pending.recommendation.role || "this role"}.`
 					: `${pending.recommendation.position || pending.recommendation.role || "Role"} found in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}.`
 			);
 		}
@@ -1932,6 +2067,7 @@
 					planningStep: slot.planningStep,
 					globalPlanningStep: slot.globalPlanningStep,
 					estimatedStartWaitHours: slot.estimatedStartWaitHours,
+					plannedJoinAt: slot.plannedJoinAt,
 					plannedStartAt: slot.plannedStartAt,
 					plannedMemberEndAt: slot.plannedMemberEndAt,
 					plannedOcCompleteAt: slot.plannedOcCompleteAt,
