@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.57
+// @version      0.2.58
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.57";
+	const SCRIPT_VERSION = "0.2.58";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -34,6 +34,7 @@
 	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
+	const CPR_ELIGIBLE_ROLE_CLASS = "askeladds-oc-planner-role-cpr-eligible";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
 	const PROFILE_CACHE_MAX_AGE_MS = AUTO_REFRESH_MS;
@@ -417,6 +418,10 @@
 			margin-top: 4px;
 			color: #b7ad9e;
 			font-size: 11px;
+		}
+		.${CPR_ELIGIBLE_ROLE_CLASS} {
+			outline: 3px solid #76d26d !important;
+			box-shadow: 0 0 0 3px rgba(118, 210, 109, 0.24), 0 0 16px rgba(118, 210, 109, 0.42) !important;
 		}
 		.askeladds-oc-planner-role-highlight {
 			outline: 3px solid #ffd166 !important;
@@ -1228,6 +1233,7 @@
 		document.getElementById(PANEL_ID)?.remove();
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
+		clearCprEligibilityHighlights();
 		lastRenderedMarkup = "";
 		state.pendingHighlight = null;
 		state.targetFeedback = null;
@@ -1589,6 +1595,52 @@
 			});
 	};
 
+	const clearCprEligibilityHighlights = () => {
+		document
+			.querySelectorAll(`.${CPR_ELIGIBLE_ROLE_CLASS}`)
+			.forEach((element) => element.classList.remove(CPR_ELIGIBLE_ROLE_CLASS));
+	};
+
+	const syncCprEligibilityHighlights = () => {
+		const payload = state.lastPayload;
+		if (
+			!state.active ||
+			!isOcCrimesPage() ||
+			payload?.noPlan ||
+			payload?.recommendationMode !== "cpr"
+		) {
+			clearCprEligibilityHighlights();
+			return;
+		}
+
+		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
+			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
+		);
+		const desiredElements = new Set();
+		for (const slots of groupCprSlotsByCrime(eligibleSlots)) {
+			let crimeElement = null;
+			for (const slot of slots) {
+				crimeElement = findCrimeElement(slot.crimeId, slot, false);
+				if (crimeElement) break;
+			}
+			if (!crimeElement) continue;
+
+			const matchedRoleElements = new Set();
+			for (const slot of slots) {
+				const roleElement = findRoleElement(crimeElement, slot);
+				if (!roleElement || matchedRoleElements.has(roleElement)) continue;
+				matchedRoleElements.add(roleElement);
+				if (inspectRoleAvailability(roleElement).kind !== "found") continue;
+				desiredElements.add(roleElement);
+			}
+		}
+
+		document.querySelectorAll(`.${CPR_ELIGIBLE_ROLE_CLASS}`).forEach((element) => {
+			if (!desiredElements.has(element)) element.classList.remove(CPR_ELIGIBLE_ROLE_CLASS);
+		});
+		desiredElements.forEach((element) => element.classList.add(CPR_ELIGIBLE_ROLE_CLASS));
+	};
+
 	const clearRecommendationJoinCues = () => {
 		document
 			.querySelectorAll(`.${JOIN_CUE_BADGE_CLASS}`)
@@ -1639,6 +1691,17 @@
 
 	const getHighlightRoleLabel = (recommendation) =>
 		String(recommendation?.position || recommendation?.role || "role");
+
+	const groupCprSlotsByCrime = (slots) => {
+		const groups = new Map();
+		for (const slot of slots) {
+			const crimeId = String(slot?.crimeId || "");
+			if (!crimeId) continue;
+			if (!groups.has(crimeId)) groups.set(crimeId, []);
+			groups.get(crimeId).push(slot);
+		}
+		return Array.from(groups.values());
+	};
 
 	const getRecommendationBadgeState = (recommendations, index, crimeElement) => {
 		const recommendation = recommendations[index];
@@ -2845,17 +2908,6 @@
 		`;
 	};
 
-	const groupCprSlotsByCrime = (slots) => {
-		const groups = new Map();
-		for (const slot of slots) {
-			const crimeId = String(slot?.crimeId || "");
-			if (!crimeId) continue;
-			if (!groups.has(crimeId)) groups.set(crimeId, []);
-			groups.get(crimeId).push(slot);
-		}
-		return Array.from(groups.values());
-	};
-
 	const cprEligibleCrimeCard = (slots) => {
 		const crime = slots[0];
 		if (!crime) return "";
@@ -2945,14 +2997,14 @@
 			<div class="ocp-card next">
 				<div class="ocp-card-title">CPR Eligibility Mode</div>
 				<div>${summary}</div>
-				<div class="ocp-muted">Eligible means allowed by CPR, not assigned or reserved. The role is checked live when you open it.</div>
+				<div class="ocp-muted">Eligible means allowed by CPR, not assigned or reserved. Open eligible roles are outlined green in Torn automatically.</div>
 				${snapshotStatus}
 				${exclusions ? `<div class="ocp-mini-meta">${exclusions}</div>` : ""}
 			</div>
 			${eligibleItems ? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
 				<summary>CPR-eligible OCs (${eligibleCrimeGroups.length})</summary>
 				<div class="ocp-flexible-body">
-					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Open an OC to find all eligible roles shown on its row.</div>
+					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Green roles are open and CPR-eligible; open an OC to focus its eligible roles in yellow.</div>
 					${eligibleItems}
 				</div>
 			</details>` : ""}
@@ -3172,6 +3224,7 @@
 			syncTargetFeedbackElement();
 			syncHighlightControls();
 			syncRecommendationJoinCues();
+			syncCprEligibilityHighlights();
 			return;
 		}
 		panel.innerHTML = markup;
@@ -3261,7 +3314,10 @@
 		panel.querySelector(".ocp-api-key")?.addEventListener("keydown", (event) => {
 			if (event.key === "Enter") refreshRecommendations(true);
 		});
-		window.setTimeout(syncRecommendationJoinCues, 0);
+		window.setTimeout(() => {
+			syncRecommendationJoinCues();
+			syncCprEligibilityHighlights();
+		}, 0);
 	};
 
 	const start = () => {
@@ -3308,7 +3364,10 @@
 		state.domSyncTimer = window.setTimeout(() => {
 			state.domSyncTimer = undefined;
 			syncPageActivation();
-			if (state.active) syncRecommendationJoinCues();
+			if (state.active) {
+				syncRecommendationJoinCues();
+				syncCprEligibilityHighlights();
+			}
 		}, delay);
 	};
 

@@ -36,7 +36,7 @@ On Torn's OC list, each reserved assignment is labelled with the role and the OC
 
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
 
-Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel groups recruiting roles by OC where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. Opening one of those OCs highlights every exact eligible role shown on its row. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
+Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel groups recruiting roles by OC where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. Every exact eligible role currently open in Torn is outlined green automatically. Opening one of the grouped OCs focuses all eligible roles on that row in yellow without changing the complete-plan highlighting behavior. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
 
 CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. A separate lightweight OC and CPR snapshot refreshes every 30 minutes without running the assignment optimizer or replacing the last complete plan. While the first lightweight refresh is running, the userscript can temporarily use the last complete-plan snapshot and labels that fallback clearly.
 
