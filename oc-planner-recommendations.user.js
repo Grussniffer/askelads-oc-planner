@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.55
+// @version      0.2.57
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const DEFAULT_FACTION_ID = "41309";
-	const SCRIPT_VERSION = "0.2.55";
+	const SCRIPT_VERSION = "0.2.57";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -37,6 +36,7 @@
 	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
+	const PROFILE_CACHE_MAX_AGE_MS = AUTO_REFRESH_MS;
 	const PANEL_EDGE_GAP = 8;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
@@ -637,6 +637,60 @@
 		#${PANEL_ID} .ocp-flexible-item:first-of-type {
 			border-top: 0;
 		}
+		#${PANEL_ID} .ocp-cpr-crime-link {
+			display: block;
+		}
+		#${PANEL_ID} .ocp-cpr-crime-head {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 6px;
+		}
+		#${PANEL_ID} .ocp-cpr-crime-name {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		#${PANEL_ID} .ocp-cpr-role-row {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 4px;
+			overflow-x: auto;
+			padding-bottom: 2px;
+			scrollbar-width: thin;
+		}
+		#${PANEL_ID} .ocp-cpr-role-chip {
+			display: inline-flex;
+			align-items: baseline;
+			gap: 4px;
+			flex: 0 0 auto;
+			padding: 2px 5px;
+			border: 1px solid rgba(173, 214, 157, 0.38);
+			border-radius: 5px;
+			background: rgba(9, 24, 11, 0.58);
+			color: #e8f5e4;
+			font-size: 10px;
+			font-weight: 700;
+			white-space: nowrap;
+		}
+		#${PANEL_ID} .ocp-cpr-role-chip strong {
+			color: #b8efa7;
+		}
+		#${PANEL_ID} .ocp-cpr-role-requirement {
+			color: #b7ad9e;
+			font-weight: 400;
+		}
+		#${PANEL_ID} .ocp-cpr-link-meta {
+			display: flex;
+			justify-content: space-between;
+			gap: 6px;
+			margin-top: 3px;
+			color: #c7d8c1;
+			font-size: 10px;
+			font-weight: 400;
+		}
 		#${PANEL_ID} .ocp-disclosure {
 			margin-top: 8px;
 			border: 1px solid #4a3718;
@@ -743,7 +797,7 @@
 		}
 	`);
 
-	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(false));
+	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(true));
 	registerMenuCommand("OC Planner: forget API key", () => {
 		stopHighlightLock();
 		storage.remove(STORAGE_KEY);
@@ -928,7 +982,11 @@
 	};
 
 	const getLatestPlanner = async (factionId) => {
-		const encodedFactionId = encodeURIComponent(String(factionId || DEFAULT_FACTION_ID));
+		const currentFactionId = String(factionId || "").trim();
+		if (!currentFactionId) {
+			throw new Error("Your Torn profile does not currently show a faction.");
+		}
+		const encodedFactionId = encodeURIComponent(currentFactionId);
 		try {
 			const payload = await requestJson({
 				url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
@@ -990,7 +1048,7 @@
 		profile?.faction_id ||
 		"";
 
-	const getPlannerFactionId = (profile) => String(getProfileFactionId(profile) || DEFAULT_FACTION_ID).trim();
+	const getPlannerFactionId = (profile) => String(getProfileFactionId(profile) || "").trim();
 
 	const recordScriptAccess = async (profile, planner) => {
 		const playerId = Number(profile?.player_id || 0);
@@ -1053,6 +1111,8 @@
 		try {
 			const cached = JSON.parse(String(storage.get(PROFILE_STORAGE_KEY, "") || ""));
 			if (cached?.keyCacheId !== keyCacheId || !cached?.profile?.player_id) return null;
+			const savedAt = Date.parse(String(cached.savedAt || ""));
+			if (!Number.isFinite(savedAt) || Date.now() - savedAt > PROFILE_CACHE_MAX_AGE_MS) return null;
 			return cached.profile;
 		} catch {
 			return null;
@@ -1095,7 +1155,8 @@
 	};
 
 	const saveCachedMemberPayload = (key, profile, payload, checkedAt) => {
-		if (!key || !payload?.memberId) return;
+		const factionId = getPlannerFactionId(profile);
+		if (!key || !payload?.memberId || !factionId) return;
 		try {
 			storage.set(
 				PAYLOAD_STORAGE_KEY,
@@ -1103,7 +1164,7 @@
 					schemaVersion: 1,
 					keyCacheId: getKeyCacheId(key),
 					memberId: payload.memberId,
-					factionId: getPlannerFactionId(profile),
+					factionId,
 					checkedAt,
 					payload,
 				})
@@ -1113,10 +1174,21 @@
 		}
 	};
 
-	const hydrateCachedMemberPayload = (key) => {
+	const hydrateCachedMemberPayload = (key, profile) => {
 		const cached = getCachedMemberPayload(key);
 		if (!cached) return false;
-		state.lastPayload = cached.payload;
+		const memberId = Number(profile?.player_id || 0);
+		const factionId = getPlannerFactionId(profile);
+		if (
+			!memberId ||
+			!factionId ||
+			Number(cached.memberId || cached.payload?.memberId || 0) !== memberId ||
+			String(cached.factionId || "").trim() !== factionId
+		) {
+			clearCachedMemberPayload();
+			return false;
+		}
+		state.lastPayload = { ...cached.payload, factionId };
 		state.lastCheckedAt = Number(cached.checkedAt || 0);
 		state.usingCachedPayload = true;
 		return true;
@@ -1550,6 +1622,24 @@
 			recommendation?.position || recommendation?.role
 		)}`;
 
+	const getHighlightRecommendations = (recommendation) =>
+		Array.isArray(recommendation?.eligibleRoles)
+			? recommendation.eligibleRoles
+			: recommendation
+				? [recommendation]
+				: [];
+
+	const getHighlightRecommendationKey = (recommendation) => {
+		const roles = getHighlightRecommendations(recommendation)
+			.map((role) => normalizeText(role.position || role.role))
+			.filter(Boolean)
+			.sort();
+		return `${String(recommendation?.crimeId || "")}|${roles.join("+")}`;
+	};
+
+	const getHighlightRoleLabel = (recommendation) =>
+		String(recommendation?.position || recommendation?.role || "role");
+
 	const getRecommendationBadgeState = (recommendations, index, crimeElement) => {
 		const recommendation = recommendations[index];
 		const role = recommendation?.position || recommendation?.role || "assigned role";
@@ -1743,7 +1833,14 @@
 		if (!panel) return;
 		const findButton = panel.querySelector(".ocp-highlight-again");
 		const stopButton = panel.querySelector(".ocp-highlight-stop");
-		if (findButton) findButton.hidden = !state.lastHighlightRecommendation || !!state.pendingHighlight;
+		if (findButton) {
+			const roleCount = getHighlightRecommendations(state.lastHighlightRecommendation).length;
+			findButton.hidden = !state.lastHighlightRecommendation || !!state.pendingHighlight;
+			findButton.textContent = roleCount > 1 ? "Find roles" : "Find role";
+			findButton.title = roleCount > 1
+				? "Find all eligible roles in this OC again"
+				: "Find the exact assigned role again";
+		}
 		if (stopButton) stopButton.hidden = !state.pendingHighlight;
 	};
 
@@ -1808,28 +1905,57 @@
 				? recommendationOrCrimeId
 				: { crimeId: recommendationOrCrimeId };
 		const id = String(recommendation.crimeId || "");
-		if (!id) return { roleFound: false };
+		const roleTargets = getHighlightRecommendations(recommendation);
+		if (!id || !roleTargets.length) return { roleFound: false, allRolesFound: false, matches: [] };
 		clearRecommendationHighlights();
 
-		const crimeElement = findCrimeElement(id, recommendation);
-		const roleElement = findRoleElement(crimeElement, recommendation);
-		if (!roleElement) return { roleFound: false };
-
-		const availability = inspectRoleAvailability(roleElement);
-		roleElement.classList.add("askeladds-oc-planner-role-highlight");
-		if (availability.kind === "filled") {
-			roleElement.classList.add("askeladds-oc-planner-role-filled");
+		let crimeElement = null;
+		for (const roleTarget of roleTargets) {
+			crimeElement = findCrimeElement(id, roleTarget);
+			if (crimeElement) break;
 		}
-		if (!state.pendingHighlight?.hasScrolled) {
-			roleElement.scrollIntoView?.({ behavior: "smooth", block: "center" });
+		if (!crimeElement) {
+			return {
+				roleFound: false,
+				allRolesFound: false,
+				matches: [],
+				missingRecommendations: roleTargets,
+			};
+		}
+
+		const matches = [];
+		const missingRecommendations = [];
+		const matchedRoleElements = new Set();
+		for (const roleTarget of roleTargets) {
+			const roleElement = findRoleElement(crimeElement, roleTarget);
+			if (!roleElement || matchedRoleElements.has(roleElement)) {
+				missingRecommendations.push(roleTarget);
+				continue;
+			}
+			matchedRoleElements.add(roleElement);
+			const availability = inspectRoleAvailability(roleElement);
+			roleElement.classList.add("askeladds-oc-planner-role-highlight");
+			if (availability.kind === "filled") {
+				roleElement.classList.add("askeladds-oc-planner-role-filled");
+			}
+			matches.push({ recommendation: roleTarget, roleElement, availability });
+		}
+		if (matches.length && !state.pendingHighlight?.hasScrolled) {
+			matches[0].roleElement.scrollIntoView?.({ behavior: "smooth", block: "center" });
 			if (state.pendingHighlight) state.pendingHighlight.hasScrolled = true;
 		}
-		return { roleFound: true, availability };
+		return {
+			roleFound: matches.length > 0,
+			allRolesFound: matches.length === roleTargets.length,
+			matches,
+			missingRecommendations,
+			availability: matches[0]?.availability,
+		};
 	};
 
 	const queueHighlightRecommendation = (recommendation) => {
-		if (!recommendation?.crimeId) return;
-		const recommendationKey = getRecommendationKey(recommendation);
+		if (!recommendation?.crimeId || !getHighlightRecommendations(recommendation).length) return;
+		const recommendationKey = getHighlightRecommendationKey(recommendation);
 		if (state.pendingHighlight?.recommendationKey === recommendationKey) {
 			return;
 		}
@@ -1840,10 +1966,13 @@
 			startedAt: Date.now(),
 			hasScrolled: false,
 		};
+		const roleLabels = getHighlightRecommendations(recommendation).map(getHighlightRoleLabel);
 		setTargetFeedback(
 			"opening",
 			"Opening OC",
-			`Looking for ${recommendation.crimeName || `OC #${recommendation.crimeId}`} / ${recommendation.position || recommendation.role || "role"}`
+			roleLabels.length > 1
+				? `Looking for ${roleLabels.length} eligible roles in ${recommendation.crimeName || `OC #${recommendation.crimeId}`}: ${roleLabels.join(", ")}`
+				: `Looking for ${recommendation.crimeName || `OC #${recommendation.crimeId}`} / ${roleLabels[0] || "role"}`
 		);
 		syncHighlightControls();
 		state.highlightObserver?.disconnect();
@@ -1867,6 +1996,50 @@
 		const pending = state.pendingHighlight;
 		if (!pending) return;
 		const result = highlightRecommendation(pending.recommendation);
+		const roleTargets = getHighlightRecommendations(pending.recommendation);
+		const groupedTarget = Array.isArray(pending.recommendation?.eligibleRoles);
+		if (groupedTarget) {
+			for (const match of result.matches || []) {
+				setRecommendationTaken(match.recommendation, match.availability?.kind === "filled");
+			}
+			if (result.roleFound) {
+				const openCount = result.matches.filter((match) => match.availability?.kind === "found").length;
+				const joinedCount = result.matches.filter((match) => match.availability?.kind === "joined").length;
+				const filledCount = result.matches.filter((match) => match.availability?.kind === "filled").length;
+				const missingCount = Math.max(0, roleTargets.length - result.matches.length);
+				const statusParts = [
+					openCount ? `${openCount} open` : "",
+					joinedCount ? `${joinedCount} joined` : "",
+					filledCount ? `${filledCount} filled` : "",
+					missingCount ? `${missingCount} still loading` : "",
+				].filter(Boolean);
+				setTargetFeedback(
+					result.allRolesFound && !joinedCount && !filledCount ? "found" : missingCount ? "opening" : openCount ? "found" : filledCount ? "filled" : "joined",
+					result.allRolesFound && !joinedCount && !filledCount
+						? `${roleTargets.length} eligible role${roleTargets.length === 1 ? "" : "s"} found`
+						: statusParts.join(" | "),
+					`${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}: ${result.matches.map((match) => `${getHighlightRoleLabel(match.recommendation)} (${match.availability?.kind || "found"})`).join(", ")}`
+				);
+			}
+			if (result.allRolesFound && Date.now() - pending.startedAt > 2800) {
+				stopHighlightLock(false);
+				return;
+			}
+			if (Date.now() - pending.startedAt > 25000) {
+				const missingRoles = (result.missingRecommendations || []).map(getHighlightRoleLabel);
+				setTargetFeedback(
+					"missing",
+					result.matches.length
+						? `Found ${result.matches.length} of ${roleTargets.length} eligible roles`
+						: "Could not find eligible roles",
+					missingRoles.length
+						? `Could not find ${missingRoles.join(", ")} in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}. The OC may have changed or Torn may still be loading it.`
+						: `Could not find the exact OC. It may have changed or Torn may still be loading it.`
+				);
+				stopHighlightLock(false);
+			}
+			return;
+		}
 		if (result.roleFound) {
 			const availabilityKind = result.availability?.kind || "found";
 			const filled = availabilityKind === "filled";
@@ -2275,6 +2448,7 @@
 		return {
 			memberId,
 			memberName,
+			factionId: getPlannerFactionId(profile),
 			noPlan: false,
 			recommendationMode,
 			...getRecommendationPolicyStatus(recommendationPolicy),
@@ -2296,6 +2470,7 @@
 
 	const buildNoPlanPayload = (profile, noPlanReason, recommendationPolicy = {}) => ({
 		...getProfileMemberIdentity(profile),
+		factionId: getPlannerFactionId(profile),
 		noPlan: true,
 		noPlanReason: noPlanReason || "missing",
 		recommendationMode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
@@ -2424,18 +2599,36 @@
 		render();
 
 		try {
-			state.profile = getCachedProfile(key);
-			if (!state.profile) {
+			const previousFactionId = getPlannerFactionId(state.profile);
+			let profile = force ? null : getCachedProfile(key);
+			if (!profile) {
 				state.progress = "Validating API key with Torn...";
 				render();
-				state.profile = await getProfileWithKey(key);
-				saveCachedProfile(key, state.profile);
+				profile = await getProfileWithKey(key);
+				saveCachedProfile(key, profile);
 			}
+			const currentFactionId = getPlannerFactionId(profile);
+			if (!currentFactionId) {
+				throw new Error("Your Torn profile does not currently show a faction.");
+			}
+			state.profile = profile;
+			if (previousFactionId && previousFactionId !== currentFactionId) {
+				stopHighlightLock();
+				clearRecommendationJoinCues();
+				clearRecommendationHighlights();
+				clearCachedMemberPayload();
+				state.lastPlanner = null;
+				state.lastPayload = null;
+				state.lastHighlightRecommendation = null;
+				state.targetFeedback = null;
+				state.takenRecommendationKeys.clear();
+			}
+			if (!state.lastPayload) hydrateCachedMemberPayload(key, profile);
 
 			state.progress = "Loading latest OC planner snapshot...";
 			render();
 
-			const snapshot = await getLatestPlanner(getPlannerFactionId(state.profile));
+			const snapshot = await getLatestPlanner(currentFactionId);
 			const planner = snapshot.recommendationPolicy.plannerRefreshRequired
 				? null
 				: snapshot.planner;
@@ -2652,6 +2845,51 @@
 		`;
 	};
 
+	const groupCprSlotsByCrime = (slots) => {
+		const groups = new Map();
+		for (const slot of slots) {
+			const crimeId = String(slot?.crimeId || "");
+			if (!crimeId) continue;
+			if (!groups.has(crimeId)) groups.set(crimeId, []);
+			groups.get(crimeId).push(slot);
+		}
+		return Array.from(groups.values());
+	};
+
+	const cprEligibleCrimeCard = (slots) => {
+		const crime = slots[0];
+		if (!crime) return "";
+		const crimeUrl = getCrimeUrl(crime.crimeId);
+		const successChance = formatChance(crime.successChance);
+		const roleChips = slots
+			.map((slot) => {
+				const role = slot.position || slot.role || "Slot";
+				const cpr = slot.cpr ? `${Math.round(Number(slot.cpr || 0))}%` : "CPR ?";
+				const requirement = slot.cprBand ? `Requires ${slot.cprBand}` : "Inside configured CPR limits";
+				return `<span class="ocp-cpr-role-chip" title="${escapeHtml(`${role}: ${cpr}. ${requirement}`)}"><span>${escapeHtml(role)}</span><strong>${escapeHtml(cpr)}</strong>${slot.cprBand ? `<span class="ocp-cpr-role-requirement">needs ${escapeHtml(slot.cprBand)}</span>` : ""}</span>`;
+			})
+			.join("");
+		const meta = [
+			crime.difficulty ? `T${crime.difficulty}` : "",
+			successChance ? `${successChance} success` : "",
+		]
+			.filter(Boolean)
+			.join(" | ");
+
+		return `
+			<div class="ocp-flexible-item">
+				<a class="ocp-card-link ocp-cpr-crime-link" href="${escapeHtml(crimeUrl)}" data-ocp-target-kind="cpr-crime" data-ocp-crime-id="${escapeHtml(crime.crimeId)}" data-ocp-crime-name="${escapeHtml(crime.crimeName || "")}">
+					<span class="ocp-cpr-crime-head">
+						<strong class="ocp-cpr-crime-name">${escapeHtml(compactCrimeLabel(crime.crimeName, crime.crimeId))}</strong>
+						<span class="ocp-pill">${slots.length} role${slots.length === 1 ? "" : "s"}</span>
+					</span>
+					<span class="ocp-cpr-role-row" aria-label="Eligible roles">${roleChips}</span>
+					<span class="ocp-cpr-link-meta"><span>${escapeHtml(meta)}</span><span>Find role${slots.length === 1 ? "" : "s"}</span></span>
+				</a>
+			</div>
+		`;
+	};
+
 	const unassignedCard = (member) => `
 		<div class="ocp-card need-more">
 			<div class="ocp-card-title">No Slot Assigned</div>
@@ -2685,11 +2923,12 @@
 		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
 			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
 		);
-		const eligibleItems = eligibleSlots.map((slot) => flexibleSlotCard(slot, true)).join("");
+		const eligibleCrimeGroups = groupCprSlotsByCrime(eligibleSlots);
+		const eligibleItems = eligibleCrimeGroups.map(cprEligibleCrimeCard).join("");
 		const unavailableCount = Number(payload.cprIneligibleCount || 0);
 		const missingCount = Number(payload.cprMissingCount || 0);
 		const summary = eligibleSlots.length
-			? `<strong>${eligibleSlots.length} open role${eligibleSlots.length === 1 ? "" : "s"}</strong> match your faction's hard CPR requirements.`
+			? `<strong>${eligibleSlots.length} open role${eligibleSlots.length === 1 ? "" : "s"}</strong> across ${eligibleCrimeGroups.length} OC${eligibleCrimeGroups.length === 1 ? "" : "s"} ${eligibleSlots.length === 1 ? "matches" : "match"} your faction's hard CPR requirements.`
 			: payload.cprOpenSlotCount
 				? "No currently open role matches your faction's CPR requirements."
 				: "No open role is currently available in the saved OC snapshot.";
@@ -2711,9 +2950,9 @@
 				${exclusions ? `<div class="ocp-mini-meta">${exclusions}</div>` : ""}
 			</div>
 			${eligibleItems ? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
-				<summary>CPR-eligible openings (${eligibleSlots.length})</summary>
+				<summary>CPR-eligible OCs (${eligibleCrimeGroups.length})</summary>
 				<div class="ocp-flexible-body">
-					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Confirm the role is still open in Torn before joining.</div>
+					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Open an OC to find all eligible roles shown on its row.</div>
 					${eligibleItems}
 				</div>
 			</details>` : ""}
@@ -2879,7 +3118,8 @@
 			"Askelads OC";
 		const statusText = plannerStatusText();
 		const feedback = state.targetFeedback;
-		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="Find the exact assigned role again"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>Find role</button>`;
+		const lastHighlightRoleCount = getHighlightRecommendations(state.lastHighlightRecommendation).length;
+		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="${lastHighlightRoleCount > 1 ? "Find all eligible roles in this OC again" : "Find the exact assigned role again"}"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>${lastHighlightRoleCount > 1 ? "Find roles" : "Find role"}</button>`;
 		const keyControls = savedKey
 			? `
 				<div class="ocp-row ocp-toolbar">
@@ -2964,15 +3204,30 @@
 			state.flexibleOpen = !!event.currentTarget.open;
 		});
 		panel.querySelectorAll(".ocp-card-link").forEach((link) => {
-			const recommendation = {
-				crimeId: link.dataset.ocpCrimeId,
-				crimeName: link.dataset.ocpCrimeName,
-				role: link.dataset.ocpRole,
-				position: link.dataset.ocpPosition,
-				roleImpactLabel: link.dataset.ocpRoleImpact,
+			const getLinkRecommendation = () => {
+				const crimeId = String(link.dataset.ocpCrimeId || "");
+				if (link.dataset.ocpTargetKind === "cpr-crime") {
+					const eligibleRoles = (state.lastPayload?.cprEligibleSlots || []).filter(
+						(slot) =>
+							String(slot.crimeId || "") === crimeId &&
+							!state.takenRecommendationKeys.has(getRecommendationKey(slot))
+					);
+					return {
+						crimeId,
+						crimeName: link.dataset.ocpCrimeName,
+						eligibleRoles,
+					};
+				}
+				return {
+					crimeId,
+					crimeName: link.dataset.ocpCrimeName,
+					role: link.dataset.ocpRole,
+					position: link.dataset.ocpPosition,
+					roleImpactLabel: link.dataset.ocpRoleImpact,
+				};
 			};
 			const prepareOcNavigation = () => {
-				queueHighlightRecommendation(recommendation);
+				queueHighlightRecommendation(getLinkRecommendation());
 			};
 			const collapseAfterNavigationTap = () => {
 				window.setTimeout(() => collapsePanelWithoutRender(), 50);
@@ -2986,7 +3241,7 @@
 		});
 		syncTargetFeedbackElement();
 		syncHighlightControls();
-		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(false));
+		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(true));
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
 			stopHighlightLock();
 			storage.remove(STORAGE_KEY);
@@ -3004,7 +3259,7 @@
 			render();
 		});
 		panel.querySelector(".ocp-api-key")?.addEventListener("keydown", (event) => {
-			if (event.key === "Enter") refreshRecommendations(false);
+			if (event.key === "Enter") refreshRecommendations(true);
 		});
 		window.setTimeout(syncRecommendationJoinCues, 0);
 	};
@@ -3013,7 +3268,7 @@
 		const key = getStoredKey();
 		if (key) {
 			state.profile = getCachedProfile(key);
-			hydrateCachedMemberPayload(key);
+			if (state.profile) hydrateCachedMemberPayload(key, state.profile);
 		}
 		state.active = isOcCrimesPage();
 		render();

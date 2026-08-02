@@ -30,13 +30,13 @@ The script uses userscript HTTPS requests:
 
 It then filters the returned planner to the player who owns the API key. The check-in sends player id, player name, faction id, script version, and planner timestamp/run id. It does not send the Torn API key. The userscript loads on Torn's `factions.php` page, but the panel only activates on the faction organized crimes tab.
 
-For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The full faction planner is not added to this local cache.
+For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The cache is scoped to the API key, player, and faction. The script revalidates the player's current faction with Torn at least every five minutes, and the Refresh button always checks it immediately. The full faction planner is not added to this local cache.
 
 On Torn's OC list, each reserved assignment is labelled with the role and the OC it follows. The label changes when the exact role is opening, found, already joined, filled by another player, or missing. Hovering the label shows the exact OC id plus planned join and start times when available.
 
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
 
-Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel lists recruiting roles where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
+Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, the panel groups recruiting roles by OC where the player's role-specific CPR is inclusively inside the saved minimum and maximum requirement. Opening one of those OCs highlights every exact eligible role shown on its row. These roles are labelled as eligible rather than assigned or reserved; the userscript remains advisory and does not enforce Torn joins.
 
 CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. A separate lightweight OC and CPR snapshot refreshes every 30 minutes without running the assignment optimizer or replacing the last complete plan. While the first lightweight refresh is running, the userscript can temporarily use the last complete-plan snapshot and labels that fallback clearly.
 
