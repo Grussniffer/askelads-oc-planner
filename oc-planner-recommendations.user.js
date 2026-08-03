@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.59
+// @version      0.2.60
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,11 +25,12 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.59";
+	const SCRIPT_VERSION = "0.2.60";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
 	const PAYLOAD_STORAGE_KEY = "askeladds_oc_planner_member_payload";
+	const SCRIPT_ACCESS_STORAGE_KEY = "askeladds_oc_planner_script_access";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
 	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
 	const PANEL_ID = "askeladds-oc-planner-panel";
@@ -37,7 +38,9 @@
 	const CPR_ELIGIBLE_ROLE_CLASS = "askeladds-oc-planner-role-cpr-eligible";
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
-	const PROFILE_CACHE_MAX_AGE_MS = AUTO_REFRESH_MS;
+	const ACTIVE_REFRESH_MS = 60 * 1000;
+	const PROFILE_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+	const SCRIPT_ACCESS_INTERVAL_MS = 6 * 60 * 60 * 1000;
 	const PANEL_EDGE_GAP = 8;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
@@ -80,19 +83,25 @@
 			GM_registerMenuCommand(name, callback);
 		}
 	};
+	const savedCollapsedPreference = String(storage.get(COLLAPSED_STORAGE_KEY, "") || "");
+	const initialCollapsed = savedCollapsedPreference
+		? savedCollapsedPreference === "1"
+		: !!String(storage.get(STORAGE_KEY, "") || "").trim();
 
 	const state = {
 		profile: null,
 		lastPlanner: null,
 		lastPayload: null,
 		lastCheckedAt: 0,
+		lastAttemptAt: 0,
+		snapshotRevision: "",
 		usingCachedPayload: false,
 		loading: false,
 		error: "",
 		progress: "",
 		autoRefreshTimer: undefined,
 		active: false,
-		collapsed: String(storage.get(COLLAPSED_STORAGE_KEY, "") || "") === "1",
+		collapsed: initialCollapsed,
 		disclosureOpen: false,
 		flexibleOpen: false,
 		pendingHighlight: null,
@@ -129,6 +138,13 @@
 		}
 		#${PANEL_ID}.collapsed .ocp-body {
 			display: none;
+		}
+		#${PANEL_ID}.collapsed {
+			width: min(230px, calc(100vw - 28px));
+			box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+		}
+		#${PANEL_ID}.collapsed .ocp-header {
+			border-bottom: 0;
 		}
 		#${PANEL_ID} * {
 			box-sizing: border-box;
@@ -168,6 +184,30 @@
 			letter-spacing: 0;
 			color: #f4d990;
 			text-shadow: 0 1px 0 #000;
+		}
+		#${PANEL_ID} .ocp-title-line {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-width: 0;
+		}
+		#${PANEL_ID} .ocp-state-dot {
+			width: 7px;
+			height: 7px;
+			flex: 0 0 7px;
+			border-radius: 50%;
+			background: #77736b;
+			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+		}
+		#${PANEL_ID} .ocp-state-dot.ready {
+			background: #74bf68;
+			box-shadow: 0 0 6px rgba(116, 191, 104, 0.58);
+		}
+		#${PANEL_ID} .ocp-state-dot.loading {
+			background: #d3a33e;
+		}
+		#${PANEL_ID} .ocp-state-dot.error {
+			background: #d96b5c;
 		}
 		#${PANEL_ID} .ocp-title-group {
 			min-width: 0;
@@ -873,6 +913,8 @@
 		state.lastPlanner = null;
 		state.lastPayload = null;
 		state.lastCheckedAt = 0;
+		state.lastAttemptAt = 0;
+		state.snapshotRevision = "";
 		state.usingCachedPayload = false;
 		state.takenRecommendationKeys.clear();
 		state.targetFeedback = null;
@@ -1047,27 +1089,35 @@
 		return profile;
 	};
 
-	const getLatestPlanner = async (factionId) => {
+	const getLatestPlanner = async (factionId, revision = "", force = false) => {
 		const currentFactionId = String(factionId || "").trim();
 		if (!currentFactionId) {
 			throw new Error("Your Torn profile does not currently show a faction.");
 		}
 		const encodedFactionId = encodeURIComponent(currentFactionId);
 		try {
+			const params = new URLSearchParams({ timestamp: String(Date.now()) });
+			if (!force && revision) params.set("revision", revision);
 			const payload = await requestJson({
-				url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?timestamp=${Date.now()}`),
+				url: getBackendApiUrl(`/api/v1/factions/${encodedFactionId}/oc-planner/bot-alerts?${params.toString()}`),
 				label: "OC Planner snapshot request",
 			});
 			const recommendationPolicy = payload?.recommendationPolicy || {};
 			const plannerRefreshRequired = recommendationPolicy.plannerRefreshRequired === true;
 			const runtimeStatus = String(recommendationPolicy.runtimeStatus || "");
+			const unchanged = payload?.notModified === true;
+			const snapshotAvailable = unchanged
+				? String(recommendationPolicy.snapshotSource || "") !== "missing"
+				: !!payload?.planner;
 			return {
 				planner: payload?.planner || null,
+				unchanged,
+				revision: String(payload?.revision || revision || ""),
 				status: plannerRefreshRequired
 					? runtimeStatus === "plan_failed"
 						? "failed"
 						: runtimeStatus === "plan_stale" ? "stale" : "refreshing"
-					: payload?.planner ? "ready" : "missing",
+					: snapshotAvailable ? "ready" : "missing",
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
 					plannerGenerationEnabled: recommendationPolicy.plannerGenerationEnabled !== false,
@@ -1095,6 +1145,8 @@
 			) {
 				return {
 					planner: null,
+					unchanged: false,
+					revision: "",
 					status: "unavailable",
 					recommendationPolicy: {
 						mode: "plan",
@@ -1118,7 +1170,7 @@
 
 	const recordScriptAccess = async (profile, planner) => {
 		const playerId = Number(profile?.player_id || 0);
-		if (!playerId) return;
+		if (!playerId) return false;
 		const factionId = getPlannerFactionId(profile);
 		const payload = {
 			playerId,
@@ -1137,6 +1189,7 @@
 				label: "OC Planner access check-in",
 				timeout: 4000,
 			});
+			return true;
 		} catch (error) {
 			try {
 				const params = new URLSearchParams();
@@ -1149,12 +1202,47 @@
 					label: "OC Planner access check-in fallback",
 					timeout: 4000,
 				});
+				return true;
 			} catch (fallbackError) {
 				console.warn(
 					"OC Planner access check-in failed:",
 					fallbackError?.message || error?.message || fallbackError || error
 				);
+				return false;
 			}
+		}
+	};
+
+	const recordScriptAccessIfNeeded = async (profile, planner) => {
+		const playerId = Number(profile?.player_id || 0);
+		const factionId = getPlannerFactionId(profile);
+		if (!playerId || !factionId) return;
+		const signature = [
+			SCRIPT_VERSION,
+			factionId,
+			playerId,
+			planner?.id || "",
+			planner?.generatedAt || "",
+		].join(":");
+		let previous = null;
+		try {
+			previous = JSON.parse(String(storage.get(SCRIPT_ACCESS_STORAGE_KEY, "") || "null"));
+		} catch {
+			previous = null;
+		}
+		const recordedAt = Number(previous?.recordedAt || 0);
+		if (
+			previous?.signature === signature &&
+			Number.isFinite(recordedAt) &&
+			Date.now() - recordedAt < SCRIPT_ACCESS_INTERVAL_MS
+		) {
+			return;
+		}
+		if (await recordScriptAccess(profile, planner)) {
+			storage.set(
+				SCRIPT_ACCESS_STORAGE_KEY,
+				JSON.stringify({ signature, recordedAt: Date.now() })
+			);
 		}
 	};
 
@@ -1208,7 +1296,7 @@
 		try {
 			const cached = JSON.parse(String(storage.get(PAYLOAD_STORAGE_KEY, "") || ""));
 			if (
-				cached?.schemaVersion !== 1 ||
+				![1, 2].includes(Number(cached?.schemaVersion)) ||
 				cached?.keyCacheId !== keyCacheId ||
 				!cached?.payload?.memberId
 			) {
@@ -1220,18 +1308,19 @@
 		}
 	};
 
-	const saveCachedMemberPayload = (key, profile, payload, checkedAt) => {
+	const saveCachedMemberPayload = (key, profile, payload, checkedAt, snapshotRevision = "") => {
 		const factionId = getPlannerFactionId(profile);
 		if (!key || !payload?.memberId || !factionId) return;
 		try {
 			storage.set(
 				PAYLOAD_STORAGE_KEY,
 				JSON.stringify({
-					schemaVersion: 1,
+					schemaVersion: 2,
 					keyCacheId: getKeyCacheId(key),
 					memberId: payload.memberId,
 					factionId,
 					checkedAt,
+					snapshotRevision: String(snapshotRevision || ""),
 					payload,
 				})
 			);
@@ -1256,6 +1345,7 @@
 		}
 		state.lastPayload = { ...cached.payload, factionId };
 		state.lastCheckedAt = Number(cached.checkedAt || 0);
+		state.snapshotRevision = String(cached.snapshotRevision || "");
 		state.usingCachedPayload = true;
 		return true;
 	};
@@ -1263,6 +1353,7 @@
 	const clearCachedMemberPayload = () => {
 		storage.remove(PAYLOAD_STORAGE_KEY);
 		state.lastCheckedAt = 0;
+		state.snapshotRevision = "";
 		state.usingCachedPayload = false;
 	};
 
@@ -2576,6 +2667,7 @@
 			noPlan: false,
 			recommendationMode,
 			...getRecommendationPolicyStatus(recommendationPolicy),
+			plannerRunId: planner?.id,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			recommendations,
@@ -2599,6 +2691,7 @@
 		noPlanReason: noPlanReason || "missing",
 		recommendationMode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
 		...getRecommendationPolicyStatus(recommendationPolicy),
+		plannerRunId: null,
 		plannerGeneratedAt: null,
 		summary: null,
 		recommendations: [],
@@ -2698,6 +2791,13 @@
 		state.collapsed = true;
 		const panel = document.getElementById(PANEL_ID);
 		panel?.classList.add("collapsed");
+		const title = panel?.querySelector(".ocp-title");
+		if (title) {
+			const memberName = state.lastPayload?.memberName || state.profile?.name || "Askelads OC";
+			const compactTitle = `${memberName} - ${compactPanelSummary(state.lastPayload)}`;
+			title.textContent = compactTitle;
+			title.title = compactTitle;
+		}
 		const collapseButton = panel?.querySelector(".ocp-collapse");
 		if (collapseButton) {
 			collapseButton.textContent = "+";
@@ -2717,6 +2817,7 @@
 		}
 
 		saveStoredKey(key);
+		state.lastAttemptAt = Date.now();
 		state.loading = true;
 		state.error = "";
 		state.progress = "Loading your Torn profile...";
@@ -2743,6 +2844,7 @@
 				clearCachedMemberPayload();
 				state.lastPlanner = null;
 				state.lastPayload = null;
+				state.snapshotRevision = "";
 				state.lastHighlightRecommendation = null;
 				state.targetFeedback = null;
 				state.takenRecommendationKeys.clear();
@@ -2752,11 +2854,36 @@
 			state.progress = "Loading latest OC planner snapshot...";
 			render();
 
-			const snapshot = await getLatestPlanner(currentFactionId);
+			const snapshot = await getLatestPlanner(
+				currentFactionId,
+				state.lastPayload ? state.snapshotRevision : "",
+				force
+			);
+			const checkedAt = Math.floor(Date.now() / 1000);
+			state.snapshotRevision = snapshot.revision;
+			if (snapshot.unchanged && state.lastPayload) {
+				state.lastCheckedAt = checkedAt;
+				state.usingCachedPayload = false;
+				state.progress = "";
+				state.error = "";
+				saveCachedMemberPayload(
+					key,
+					state.profile,
+					state.lastPayload,
+					checkedAt,
+					state.snapshotRevision
+				);
+				if (snapshot.status !== "unavailable") {
+					void recordScriptAccessIfNeeded(state.profile, {
+						id: state.lastPayload.plannerRunId,
+						generatedAt: state.lastPayload.plannerGeneratedAt,
+					});
+				}
+				return;
+			}
 			const planner = snapshot.recommendationPolicy.plannerRefreshRequired
 				? null
 				: snapshot.planner;
-			const checkedAt = Math.floor(Date.now() / 1000);
 			state.lastPlanner = planner;
 			const nextPayload = planner
 				? buildMemberPayload(state.profile, planner, snapshot.recommendationPolicy)
@@ -2781,13 +2908,18 @@
 			if (!state.takenRecommendationKeys.size && state.targetFeedback?.kind === "filled") {
 				state.targetFeedback = null;
 			}
-			saveCachedMemberPayload(key, state.profile, state.lastPayload, checkedAt);
+			saveCachedMemberPayload(
+				key,
+				state.profile,
+				state.lastPayload,
+				checkedAt,
+				state.snapshotRevision
+			);
 			state.progress = "";
 			state.error = "";
-			scheduleAutoRefresh();
 			clearRecommendationHighlights();
 			if (snapshot.status !== "unavailable") {
-				void recordScriptAccess(state.profile, planner);
+				void recordScriptAccessIfNeeded(state.profile, planner);
 			}
 		} catch (error) {
 			state.error = getFriendlyErrorMessage(error);
@@ -2795,25 +2927,54 @@
 		} finally {
 			state.loading = false;
 			render();
+			scheduleAutoRefresh();
 		}
 	};
 
-	const scheduleAutoRefresh = () => {
+	const getNextRefreshDelay = () => {
+		if (state.error) return ACTIVE_REFRESH_MS;
+		const payload = state.lastPayload;
+		if (
+			payload?.noPlanReason === "refreshing" ||
+			payload?.runtimeStatus === "plan_generating" ||
+			payload?.cprSnapshotStatus === "refreshing"
+		) {
+			return ACTIVE_REFRESH_MS;
+		}
+		return AUTO_REFRESH_MS;
+	};
+
+	const scheduleAutoRefresh = (delay = getNextRefreshDelay()) => {
 		if (state.autoRefreshTimer) window.clearTimeout(state.autoRefreshTimer);
 		state.autoRefreshTimer = window.setTimeout(() => {
 			if (document.visibilityState === "hidden") {
-				scheduleAutoRefresh();
+				scheduleAutoRefresh(delay);
 				return;
 			}
 			if (state.active && isOcCrimesPage() && getStoredKey()) {
 				refreshRecommendations(false);
 			}
-		}, AUTO_REFRESH_MS);
+		}, delay);
+	};
+	const isRefreshDue = () => {
+		const lastActivityAt = Math.max(state.lastAttemptAt, state.lastCheckedAt * 1000);
+		return !lastActivityAt || Date.now() - lastActivityAt >= getNextRefreshDelay();
+	};
+	const getRefreshRemainingDelay = () => {
+		const lastActivityAt = Math.max(state.lastAttemptAt, state.lastCheckedAt * 1000);
+		if (!lastActivityAt) return 0;
+		return Math.max(1000, getNextRefreshDelay() - (Date.now() - lastActivityAt));
 	};
 
 	const resumeVisibleRefresh = () => {
 		if (document.visibilityState !== "visible") return;
-		if (state.active && isOcCrimesPage() && getStoredKey() && !state.loading) {
+		if (
+			state.active &&
+			isOcCrimesPage() &&
+			getStoredKey() &&
+			!state.loading &&
+			isRefreshDue()
+		) {
 			refreshRecommendations(false);
 		}
 	};
@@ -3205,6 +3366,38 @@
 		return checkedAge ? `Checked ${checkedAge} | ${dataLabel} ${planAge || "saved"}${modeSuffix}` : `${dataLabel} ${planAge || "saved"}${modeSuffix}`;
 	};
 
+	const compactPanelSummary = (payload) => {
+		if (state.loading && !payload) return "Checking";
+		if (state.error && !payload) return "Connection issue";
+		if (payload?.noPlan) {
+			if (payload.noPlanReason === "refreshing") return "Plan refreshing";
+			if (payload.noPlanReason === "failed") return "Plan failed";
+			if (payload.noPlanReason === "unavailable") return "Unavailable";
+			return "No plan";
+		}
+		if (payload?.recommendationMode === "cpr") {
+			const count = Number(payload.cprEligibleSlots?.length || 0);
+			return `${count} CPR role${count === 1 ? "" : "s"}`;
+		}
+		const next = payload?.recommendations?.[0];
+		if (next) {
+			const step = Number(next.planningStep || 0);
+			const role = next.position || next.role || "Next OC";
+			return `${step ? `Step ${step}: ` : ""}${role}`;
+		}
+		const flexibleCount = Number(payload?.flexibleSlots?.length || 0);
+		if (flexibleCount) return `${flexibleCount} suitable opening${flexibleCount === 1 ? "" : "s"}`;
+		if (payload?.missingCpr) return "Missing CPR";
+		return payload ? "No assignment" : "OC Planner";
+	};
+
+	const panelStateTone = () => {
+		if (state.error) return "error";
+		if (state.loading) return "loading";
+		if (state.lastPayload && !state.lastPayload.noPlan) return "ready";
+		return "idle";
+	};
+
 	const render = () => {
 		if (!state.active || !isOcCrimesPage()) {
 			removePanel();
@@ -3223,11 +3416,15 @@
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
 		const collapsed = state.collapsed;
-		const headerName =
+		const memberName =
 			state.lastPayload?.memberName ||
 			state.profile?.name ||
 			"Askelads OC";
+		const headerName = collapsed
+			? `${memberName} - ${compactPanelSummary(state.lastPayload)}`
+			: memberName;
 		const statusText = plannerStatusText();
+		const stateTone = panelStateTone();
 		const feedback = state.targetFeedback;
 		const lastHighlightRoleCount = getHighlightRecommendations(state.lastHighlightRecommendation).length;
 		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="${lastHighlightRoleCount > 1 ? "Find all eligible roles in this OC again" : "Find the exact assigned role again"}"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>${lastHighlightRoleCount > 1 ? "Find roles" : "Find role"}</button>`;
@@ -3249,7 +3446,10 @@
 		const markup = `
 			<div class="ocp-header">
 				<div class="ocp-title-group">
-					<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+					<div class="ocp-title-line">
+						<span class="ocp-state-dot ${escapeHtml(stateTone)}" title="${escapeHtml(statusText || compactPanelSummary(state.lastPayload))}"></span>
+						<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+					</div>
 					<span class="ocp-target-feedback ${escapeHtml(feedback?.kind || "")}" aria-live="polite" title="${escapeHtml(feedback?.detail || feedback?.label || "")}"${feedback ? "" : " hidden"}>${escapeHtml(feedback?.label || "")}</span>
 				</div>
 				<div class="ocp-actions">
@@ -3405,8 +3605,14 @@
 		}
 
 		render();
-		if (getStoredKey() && !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl())) {
+		if (
+			getStoredKey() &&
+			!/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl()) &&
+			isRefreshDue()
+		) {
 			refreshRecommendations(false);
+		} else if (getStoredKey()) {
+			scheduleAutoRefresh(getRefreshRemainingDelay());
 		}
 	};
 

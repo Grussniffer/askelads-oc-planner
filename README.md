@@ -25,12 +25,16 @@ On Torn PDA, the script falls back to PDA's `PDA_httpGet`/`PDA_httpPost` helpers
 The script uses userscript HTTPS requests:
 
 - Torn API `user/?selections=profile` to identify the player who owns the key
-- Backend `GET /api/oc-planner/bot-alerts` to fetch the latest complete-plan or CPR eligibility snapshot
-- Backend `POST /api/oc-planner/script-access` to record that this player checked the planner
+- Backend `GET /api/v1/factions/:factionId/oc-planner/bot-alerts` to fetch the latest complete-plan or CPR eligibility snapshot
+- Backend `POST /api/v1/factions/:factionId/oc-planner/script-access` to record that this player checked the planner
 
 It then filters the returned planner to the player who owns the API key. The check-in sends player id, player name, faction id, script version, and planner timestamp/run id. It does not send the Torn API key. The userscript loads on Torn's `factions.php` page, but the panel only activates on the faction organized crimes tab.
 
-For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The cache is scoped to the API key, player, and faction. The script revalidates the player's current faction with Torn at least every five minutes, and the Refresh button always checks it immediately. The full faction planner is not added to this local cache.
+For faster startup, the script stores only that player's filtered recommendation locally and shows it while checking the backend for an update. The cache is scoped to the API key, player, and faction. Normal refreshes send the saved snapshot revision, allowing the backend to return a compact unchanged response instead of the full faction plan. The script revalidates the player's current faction with Torn every 15 minutes, while the Refresh button always checks it immediately. The full faction planner is not added to this local cache.
+
+Ready snapshots are checked every five minutes. Generating and failed snapshots retry after one minute, and returning to the browser tab does not issue another request when the latest check is still fresh. Script-access check-ins are limited to once every six hours unless the player, faction, script version, or planner run changes.
+
+The panel remembers whether the player left it collapsed. When a saved key has no prior display preference, it starts as a narrow summary strip showing the next action and expands on click.
 
 On Torn's OC list, each reserved assignment is labelled with the role and the OC it follows. The label changes when the exact role is opening, found, already joined, filled by another player, or missing. Hovering the label shows the exact OC id plus planned join and start times when available.
 
