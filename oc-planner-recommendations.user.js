@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.60
-// @description  Shows your OC Planner recommendation on Torn's faction OC page.
+// @version      0.2.61
+// @description  Shows OC recommendations on Torn.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
 // @updateURL    https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.meta.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.60";
+	const SCRIPT_VERSION = "0.2.61";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -160,8 +160,8 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			gap: 6px;
-			padding: 6px 7px;
+			gap: 4px;
+			padding: 4px 6px;
 			background: linear-gradient(180deg, rgba(35, 25, 14, 0.96), rgba(14, 11, 8, 0.96));
 			border-bottom: 1px solid #5c4318;
 			cursor: pointer;
@@ -176,11 +176,12 @@
 		}
 		#${PANEL_ID} .ocp-title {
 			min-width: 0;
+			flex: 0 1 auto;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
 			font-weight: 700;
-			font-size: 14px;
+			font-size: 13px;
 			letter-spacing: 0;
 			color: #f4d990;
 			text-shadow: 0 1px 0 #000;
@@ -188,13 +189,19 @@
 		#${PANEL_ID} .ocp-title-line {
 			display: flex;
 			align-items: center;
-			gap: 6px;
+			gap: 4px;
 			min-width: 0;
 		}
+		#${PANEL_ID} .ocp-version {
+			flex: 0 0 auto;
+			font-size: 9px;
+			font-weight: 600;
+			color: #8f8678;
+		}
 		#${PANEL_ID} .ocp-state-dot {
-			width: 7px;
-			height: 7px;
-			flex: 0 0 7px;
+			width: 6px;
+			height: 6px;
+			flex: 0 0 6px;
 			border-radius: 50%;
 			background: #77736b;
 			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -257,8 +264,8 @@
 			box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset;
 		}
 		#${PANEL_ID} .ocp-icon-button {
-			width: 24px;
-			height: 24px;
+			width: 22px;
+			height: 22px;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
@@ -615,11 +622,6 @@
 			color: #f1e8d7;
 			overflow-wrap: anywhere;
 		}
-		#${PANEL_ID} .ocp-footer {
-			margin-top: 6px;
-			font-size: 12px;
-			color: #9c8f7c;
-		}
 		#${PANEL_ID} .ocp-team {
 			display: block;
 			margin-top: 5px;
@@ -851,13 +853,13 @@
 				width: min(210px, calc(100vw - 16px));
 			}
 			#${PANEL_ID} .ocp-header {
-				min-height: 44px;
-				padding: 8px 10px;
+				min-height: 34px;
+				padding: 4px 6px;
 			}
 			#${PANEL_ID} .ocp-icon-button {
-				width: 34px;
-				height: 34px;
-				font-size: 18px;
+				width: 26px;
+				height: 26px;
+				font-size: 14px;
 			}
 			#${PANEL_ID} .ocp-body {
 				padding: 8px;
@@ -1031,9 +1033,7 @@
 						let errorPayload = null;
 						try {
 							errorPayload = JSON.parse(response.responseText || "null");
-						} catch {
-							// Keep the normal HTTP error when the response is not JSON.
-						}
+						} catch {}
 						const detail = String(errorPayload?.error || errorPayload?.message || "").trim();
 						const requestError = new Error(
 							`${options.label || "Request"} failed with HTTP ${status}${detail ? `: ${detail}` : "."}`
@@ -1407,9 +1407,7 @@
 			const left = Number(position?.left);
 			const top = Number(position?.top);
 			if (Number.isFinite(left) && Number.isFinite(top)) return { left, top };
-		} catch (_error) {
-			// Bad stored coordinates should not break the panel.
-		}
+		} catch {}
 
 		storage.remove(POSITION_STORAGE_KEY);
 		return null;
@@ -1513,16 +1511,16 @@
 		const message = String(error?.message || "");
 		const lower = message.toLowerCase();
 		if (lower.includes("torn profile") || lower.includes("torn api") || lower.includes("api rejected")) {
-			return `${message} Try using a fresh Torn API key with profile access.`;
+			return `${message} Check profile access.`;
 		}
 		if (lower.includes("oc planner snapshot") || lower.includes("saved oc planner") || lower.includes("backend")) {
-			return `${message} The planner backend may be down, blocked, or routed incorrectly.`;
+			return `${message} Planner service unavailable.`;
 		}
 		if (lower.includes("expected json")) {
-			return `${message} Check that /api requests reach the backend, not the frontend.`;
+			return `${message} Invalid backend route.`;
 		}
 		if (lower.includes("timed out") || lower.includes("network")) {
-			return `${message} Check your connection, VPN/adblocker, and whether Torn or the planner host is reachable.`;
+			return `${message} Check your connection.`;
 		}
 		return message || "Could not load OC recommendation.";
 	};
@@ -2186,8 +2184,8 @@
 			"opening",
 			"Opening OC",
 			roleLabels.length > 1
-				? `Looking for ${roleLabels.length} eligible roles in ${recommendation.crimeName || `OC #${recommendation.crimeId}`}: ${roleLabels.join(", ")}`
-				: `Looking for ${recommendation.crimeName || `OC #${recommendation.crimeId}`} / ${roleLabels[0] || "role"}`
+				? `${recommendation.crimeName || `OC #${recommendation.crimeId}`}: ${roleLabels.join(", ")}`
+				: `${recommendation.crimeName || `OC #${recommendation.crimeId}`} / ${roleLabels[0] || "role"}`
 		);
 		syncHighlightControls();
 		state.highlightObserver?.disconnect();
@@ -2248,8 +2246,8 @@
 						? `Found ${result.matches.length} of ${roleTargets.length} eligible roles`
 						: "Could not find eligible roles",
 					missingRoles.length
-						? `Could not find ${missingRoles.join(", ")} in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}. The OC may have changed or Torn may still be loading it.`
-						: `Could not find the exact OC. It may have changed or Torn may still be loading it.`
+						? `Missing: ${missingRoles.join(", ")}. The OC may have changed or still be loading.`
+						: "OC not found. It may have changed or still be loading."
 				);
 				stopHighlightLock(false);
 			}
@@ -2264,10 +2262,10 @@
 				filled ? "filled" : joined ? "joined" : "found",
 				filled ? "Role already filled" : joined ? "Already joined" : "Role found",
 				filled && result.availability?.occupant?.name
-					? `${pending.recommendation.position || pending.recommendation.role || "Role"} is occupied by ${result.availability.occupant.name}. Tap the planner for other suitable openings.`
+					? `Occupied by ${result.availability.occupant.name}.`
 					: joined
-						? `You are already in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} as ${pending.recommendation.position || pending.recommendation.role || "this role"}.`
-					: `${pending.recommendation.position || pending.recommendation.role || "Role"} found in ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`}.`
+						? `${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} / ${pending.recommendation.position || pending.recommendation.role || "role"}`
+					: `${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} / ${pending.recommendation.position || pending.recommendation.role || "role"}`
 			);
 		}
 		if (result.roleFound && Date.now() - pending.startedAt > 2800) {
@@ -2278,7 +2276,7 @@
 			setTargetFeedback(
 				"missing",
 				"Could not find exact OC/role",
-				`Could not find ${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} / ${pending.recommendation.position || pending.recommendation.role || "role"}. The OC may have changed or Torn may still be loading it.`
+				`${pending.recommendation.crimeName || `OC #${pending.recommendation.crimeId}`} / ${pending.recommendation.position || pending.recommendation.role || "role"} not found.`
 			);
 			stopHighlightLock(false);
 		}
@@ -3122,7 +3120,7 @@
 				<div class="ocp-card-heading">
 					<span>${escapeHtml(compactCrimeLabel(slot.crimeName, slot.crimeId))}</span>
 					<span class="ocp-muted">${escapeHtml(slot.position || slot.role || "Slot")}</span>
-					${cprMode ? `<span class="ocp-pill">Eligible by CPR</span>` : ""}
+					${cprMode ? `<span class="ocp-pill">CPR eligible</span>` : ""}
 				</div>
 				${meta ? `<div class="ocp-mini-meta">${meta}</div>` : ""}
 				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-crime-name="${escapeHtml(slot.crimeName || "")}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">${escapeHtml(linkLabel)}</a>
@@ -3139,7 +3137,7 @@
 			.map((slot) => {
 				const role = slot.position || slot.role || "Slot";
 				const cpr = slot.cpr ? `${Math.round(Number(slot.cpr || 0))}%` : "CPR ?";
-				const requirement = slot.cprBand ? `Requires ${slot.cprBand}` : "Inside configured CPR limits";
+				const requirement = slot.cprBand ? `Needs ${slot.cprBand}` : "Within limits";
 				return `<span class="ocp-cpr-role-chip" title="${escapeHtml(`${role}: ${cpr}. ${requirement}`)}"><span>${escapeHtml(role)}</span><strong>${escapeHtml(cpr)}</strong>${slot.cprBand ? `<span class="ocp-cpr-role-requirement">needs ${escapeHtml(slot.cprBand)}</span>` : ""}</span>`;
 			})
 			.join("");
@@ -3166,8 +3164,7 @@
 
 	const unassignedCard = (member) => `
 		<div class="ocp-card need-more">
-			<div class="ocp-card-title">No Slot Assigned</div>
-			<div>No personal slot is reserved for you in the latest plan.</div>
+			<div class="ocp-card-title">No assignment</div>
 			<div class="ocp-grid">
 				${member.bestCprCrimeName ? `<div class="ocp-label">Best fit</div><div class="ocp-value">${escapeHtml(member.bestCprCrimeName)}</div>` : ""}
 				${member.bestCprRoleName ? `<div class="ocp-label">Role</div><div class="ocp-value">${escapeHtml(member.bestCprRoleName)}</div>` : ""}
@@ -3180,13 +3177,13 @@
 	const renderCprSnapshotStatus = (payload) => {
 		const snapshotAge = formatAge(payload.cprSnapshotGeneratedAt || payload.snapshotGeneratedAt);
 		if (payload.snapshotSource === "plan_fallback") {
-			return '<div class="ocp-flexible-note ocp-muted"><strong>Refreshing CPR data.</strong> Using the last saved OC snapshot for now; confirm the role in Torn.</div>';
+			return '<div class="ocp-flexible-note ocp-muted">Refreshing CPR; showing saved data.</div>';
 		}
 		if (payload.cprSnapshotStatus === "failed") {
-			return `<div class="ocp-flexible-note ocp-muted"><strong>Latest CPR data refresh failed.</strong>${snapshotAge ? ` Showing data checked ${escapeHtml(snapshotAge)}.` : " Confirm roles directly in Torn."}</div>`;
+			return `<div class="ocp-flexible-note ocp-muted">CPR refresh failed.${snapshotAge ? ` Data ${escapeHtml(snapshotAge)}.` : ""}</div>`;
 		}
 		if (payload.cprSnapshotStatus === "refreshing") {
-			return `<div class="ocp-flexible-note ocp-muted"><strong>Refreshing OC and CPR data.</strong>${snapshotAge ? ` Current data was checked ${escapeHtml(snapshotAge)}.` : ""}</div>`;
+			return `<div class="ocp-flexible-note ocp-muted">Refreshing CPR.${snapshotAge ? ` Data ${escapeHtml(snapshotAge)}.` : ""}</div>`;
 		}
 		return "";
 	};
@@ -3209,8 +3206,8 @@
 		const roleCount = eligibleSlots.length;
 		const crimeCount = eligibleCrimeGroups.length;
 		const rule = roleCount
-			? "Only green roles are allowed; unmarked roles are not."
-			: "No green roles are allowed right now.";
+			? "Green roles are allowed."
+			: "No allowed roles.";
 
 		return `
 			<div class="ocp-cpr-overview">
@@ -3224,7 +3221,7 @@
 			${eligibleItems ? `<details class="ocp-flexible ocp-cpr-details"${state.flexibleOpen ? " open" : ""}>
 				<summary>Allowed roles (${roleCount})</summary>
 				<div class="ocp-flexible-body">
-					<div class="ocp-flexible-note ocp-muted">Grouped across ${crimeCount} OC${crimeCount === 1 ? "" : "s"}. Select one to focus its allowed roles in yellow.${exclusionSummary ? ` ${escapeHtml(exclusionSummary)}.` : ""}</div>
+					${exclusionSummary ? `<div class="ocp-flexible-note ocp-muted">${escapeHtml(exclusionSummary)}</div>` : ""}
 					${eligibleItems}
 				</div>
 			</details>` : ""}
@@ -3234,52 +3231,43 @@
 	const getNoPlanCopy = (payload) => {
 		if (payload.noPlanReason === "unavailable") {
 			return {
-				title: "OC Planner Unavailable",
-				message: "OC Planner is not enabled or publicly available for your faction.",
-				guidance: "A faction admin can enable OC Planner before recommendations can be shown.",
+				title: "Planner unavailable",
+				message: "Disabled for this faction.",
 			};
 		}
 		if (payload.recommendationMode === "cpr" && payload.cprSnapshotStatus === "refreshing") {
 			return {
-				title: "Loading CPR Data",
-				message: "The first lightweight OC and CPR snapshot is being prepared.",
-				guidance: "Recommendations will appear as soon as the snapshot is ready.",
+				title: "Loading CPR",
+				message: "Waiting for the first snapshot.",
 			};
 		}
 		if (payload.recommendationMode === "cpr" && payload.cprSnapshotStatus === "failed") {
 			return {
-				title: "CPR Data Unavailable",
-				message: "The lightweight OC and CPR snapshot could not be refreshed.",
-				guidance: "The backend will retry automatically; a faction planner admin can check the planner status.",
+				title: "CPR unavailable",
+				message: "Refresh failed; retrying.",
 			};
 		}
 		if (payload.noPlanReason === "failed" || payload.runtimeStatus === "plan_failed") {
 			return {
-				title: "Plan Generation Failed",
-				message: "The backend could not generate the required fresh complete plan.",
-				guidance: "A faction planner admin can retry from the planner controls.",
+				title: "Plan failed",
+				message: "Admin refresh required.",
 			};
 		}
 		if (payload.noPlanReason === "stale" || payload.runtimeStatus === "plan_stale") {
 			return {
-				title: "Fresh Plan Required",
-				message: "Planner settings changed after the last complete plan.",
-				guidance: "A faction planner admin needs to refresh the planner before assignments can be shown.",
+				title: "Plan outdated",
+				message: "Admin refresh required.",
 			};
 		}
 		if (payload.noPlanReason === "refreshing") {
 			return {
-				title: "Fresh Plan Required",
-				message: "Complete plan was enabled and the required fresh plan is being generated.",
-				guidance: "Old assignments are hidden until the new plan is ready.",
+				title: "Plan refreshing",
+				message: "Assignments hidden until ready.",
 			};
 		}
 		return {
-			title: "No Faction Plan Yet",
-			message: "Your faction does not have a saved OC Planner plan yet.",
-			guidance: payload.recommendationMode === "cpr"
-				? "CPR mode still needs a snapshot of current OCs and member CPR."
-				: "Ask a faction planner admin to generate the first plan.",
+			title: "No faction plan",
+			message: payload.recommendationMode === "cpr" ? "CPR snapshot required." : "Admin setup required.",
 		};
 	};
 
@@ -3292,7 +3280,6 @@
 				<div class="ocp-card no-plan">
 					<div class="ocp-card-title">${copy.title}</div>
 					<div>${copy.message}</div>
-					<div class="ocp-muted">${copy.guidance} This script will keep checking automatically.</div>
 				</div>
 			`;
 		}
@@ -3313,7 +3300,7 @@
 			? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
 				<summary>Other suitable openings (${flexibleSlots.length})</summary>
 				<div class="ocp-flexible-body">
-					<div class="ocp-flexible-note ocp-muted"><strong>Optional, not reserved for you.</strong> Your CPR is inside each role's limits configured by the planner admins.</div>
+					<div class="ocp-flexible-note ocp-muted">Not reserved; CPR within range.</div>
 					${flexibleItems}
 				</div>
 			</details>`
@@ -3322,10 +3309,10 @@
 			? payload.unassigned.map(unassignedCard).join("")
 			: "";
 		const missingCpr = payload.missingCpr
-			? `<div class="ocp-card need-more"><div class="ocp-card-title">Missing CPR</div><div>Your CPR is missing from TornStats/Supabase, so the planner cannot place you yet.</div></div>`
+			? `<div class="ocp-card need-more"><div class="ocp-card-title">Missing CPR</div><div>No CPR data found.</div></div>`
 			: "";
 		const empty = !cards && !flexible && !unassigned && !missingCpr
-			? `<div class="ocp-card"><div class="ocp-card-title">Nothing To Join</div><div>No personal OC recommendation was found in the latest planner run.</div></div>`
+			? `<div class="ocp-card"><div class="ocp-card-title">No assignment</div></div>`
 			: "";
 
 		return `
@@ -3427,7 +3414,7 @@
 		const stateTone = panelStateTone();
 		const feedback = state.targetFeedback;
 		const lastHighlightRoleCount = getHighlightRecommendations(state.lastHighlightRecommendation).length;
-		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="${lastHighlightRoleCount > 1 ? "Find all eligible roles in this OC again" : "Find the exact assigned role again"}"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>${lastHighlightRoleCount > 1 ? "Find roles" : "Find role"}</button>`;
+		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="Highlight again"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>${lastHighlightRoleCount > 1 ? "Find roles" : "Find role"}</button>`;
 		const keyControls = savedKey
 			? `
 				<div class="ocp-row ocp-toolbar">
@@ -3449,12 +3436,13 @@
 					<div class="ocp-title-line">
 						<span class="ocp-state-dot ${escapeHtml(stateTone)}" title="${escapeHtml(statusText || compactPanelSummary(state.lastPayload))}"></span>
 						<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+						<span class="ocp-version">v${escapeHtml(SCRIPT_VERSION)}</span>
 					</div>
 					<span class="ocp-target-feedback ${escapeHtml(feedback?.kind || "")}" aria-live="polite" title="${escapeHtml(feedback?.detail || feedback?.label || "")}"${feedback ? "" : " hidden"}>${escapeHtml(feedback?.label || "")}</span>
 				</div>
 				<div class="ocp-actions">
 					${highlightAgain}
-					<button class="ocp-button ocp-highlight-stop" title="Stop finding the role"${state.pendingHighlight ? "" : " hidden"}>Stop</button>
+					<button class="ocp-button ocp-highlight-stop" title="Stop highlight"${state.pendingHighlight ? "" : " hidden"}>Stop</button>
 					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
 				</div>
 			</div>
@@ -3467,13 +3455,11 @@
 				<details class="ocp-disclosure"${state.disclosureOpen ? " open" : ""}>
 					<summary>${savedKey ? "Privacy" : "API key use"}</summary>
 					<table>
-						<tr><th>Data storage</th><td>API key, profile cache, and your last filtered recommendation are stored locally by your userscript manager or Torn PDA.</td></tr>
-						<tr><th>Data sharing</th><td>Your key is sent to Torn's official API for profile lookup. It is not sent to the OC Planner backend.</td></tr>
-						<tr><th>Purpose of use</th><td>Show your planner assignment or the open roles allowed by your faction's CPR policy.</td></tr>
-						<tr><th>Key storage and sharing</th><td>Stored locally only. The userscript never asks the backend to save your key.</td></tr>
-						<tr><th>Required access</th><td>Enough access for Torn profile lookup. OC data is fetched from the backend's latest saved planner snapshot.</td></tr>
+						<tr><th>Local</th><td>API key and cached recommendation.</td></tr>
+						<tr><th>Key</th><td>Sent only to Torn for profile lookup.</td></tr>
+						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
+						<tr><th>Actions</th><td>Display only. No joins or submissions.</td></tr>
 					</table>
-					<div class="ocp-footer">Displays advice only. It does not click, join, submit, or automate Torn actions.</div>
 					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
 			</div>
