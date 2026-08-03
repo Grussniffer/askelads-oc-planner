@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.61
+// @version      0.2.62
 // @description  Shows OC recommendations on Torn.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.61";
+	const SCRIPT_VERSION = "0.2.62";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -95,6 +95,8 @@
 		lastCheckedAt: 0,
 		lastAttemptAt: 0,
 		snapshotRevision: "",
+		latestScriptVersion: "",
+		scriptInstallUrl: "",
 		usingCachedPayload: false,
 		loading: false,
 		error: "",
@@ -197,6 +199,21 @@
 			font-size: 9px;
 			font-weight: 600;
 			color: #8f8678;
+		}
+		#${PANEL_ID} .ocp-update-link {
+			flex: 0 0 auto;
+			border: 1px solid #9f741d;
+			border-radius: 4px;
+			padding: 1px 4px;
+			font-size: 9px;
+			font-weight: 700;
+			line-height: 1.2;
+			color: #ffe29a;
+			background: rgba(112, 75, 10, 0.65);
+			text-decoration: none;
+		}
+		#${PANEL_ID} .ocp-update-link:hover {
+			filter: brightness(1.15);
 		}
 		#${PANEL_ID} .ocp-state-dot {
 			width: 6px;
@@ -831,6 +848,7 @@
 		}
 		#${PANEL_ID} .ocp-privacy-actions {
 			display: flex;
+			gap: 5px;
 			justify-content: flex-end;
 			padding: 6px;
 			border-top: 1px solid #3b2c17;
@@ -943,6 +961,24 @@
 			.replace(/>/g, "&gt;")
 			.replace(/"/g, "&quot;")
 			.replace(/'/g, "&#039;");
+
+	const compareVersions = (left, right) => {
+		const parts = (value) => String(value || "")
+			.replace(/^v/i, "")
+			.split(/[.+-]/)
+			.slice(0, 3)
+			.map((part) => Number(part) || 0);
+		const leftParts = parts(left);
+		const rightParts = parts(right);
+		for (let index = 0; index < 3; index += 1) {
+			const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+			if (difference) return difference;
+		}
+		return 0;
+	};
+
+	const scriptUpdateAvailable = () =>
+		!!state.latestScriptVersion && compareVersions(SCRIPT_VERSION, state.latestScriptVersion) < 0;
 
 	const getBackendBaseUrl = () => BACKEND_BASE_URL.replace(/\/+$/, "");
 
@@ -1113,6 +1149,10 @@
 				planner: payload?.planner || null,
 				unchanged,
 				revision: String(payload?.revision || revision || ""),
+				scriptRelease: {
+					latestVersion: String(payload?.scriptRelease?.latestVersion || ""),
+					installUrl: String(payload?.scriptRelease?.installUrl || ""),
+				},
 				status: plannerRefreshRequired
 					? runtimeStatus === "plan_failed"
 						? "failed"
@@ -1147,6 +1187,10 @@
 					planner: null,
 					unchanged: false,
 					revision: "",
+					scriptRelease: {
+						latestVersion: "",
+						installUrl: "",
+					},
 					status: "unavailable",
 					recommendationPolicy: {
 						mode: "plan",
@@ -2063,6 +2107,53 @@
 		window.setTimeout(syncRecommendationJoinCues, 0);
 	};
 
+	const buildDiagnostics = () => JSON.stringify({
+		scriptVersion: SCRIPT_VERSION,
+		latestScriptVersion: state.latestScriptVersion || null,
+		playerId: Number(state.lastPayload?.memberId || state.profile?.player_id || 0) || null,
+		factionId: getPlannerFactionId(state.profile) || null,
+		recommendationMode: state.lastPayload?.recommendationMode || null,
+		plannerRunId: state.lastPayload?.plannerRunId || null,
+		plannerGeneratedAt: state.lastPayload?.plannerGeneratedAt || null,
+		snapshotRevision: state.snapshotRevision || null,
+		lastCheckedAt: state.lastCheckedAt
+			? new Date(state.lastCheckedAt * 1000).toISOString()
+			: null,
+		lastAttemptAt: state.lastAttemptAt
+			? new Date(state.lastAttemptAt).toISOString()
+			: null,
+		usingCachedPayload: state.usingCachedPayload,
+		currentPageCrimeId: getCurrentPageCrimeId() || null,
+		recommendationCount: Number(state.lastPayload?.recommendations?.length || 0),
+		noPlanReason: state.lastPayload?.noPlanReason || null,
+		error: state.error || null,
+	}, null, 2);
+
+	const copyText = async (value) => {
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(value);
+			return;
+		}
+		const textarea = document.createElement("textarea");
+		textarea.value = value;
+		textarea.style.position = "fixed";
+		textarea.style.opacity = "0";
+		document.body.appendChild(textarea);
+		textarea.select();
+		const copied = document.execCommand("copy");
+		textarea.remove();
+		if (!copied) throw new Error("Copy failed");
+	};
+
+	const copyDiagnostics = async () => {
+		try {
+			await copyText(buildDiagnostics());
+			setTargetFeedback("found", "Diagnostics copied", "No API key was included.");
+		} catch {
+			setTargetFeedback("error", "Copy failed", "Could not copy diagnostics to the clipboard.");
+		}
+	};
+
 	const setRecommendationTaken = (recommendation, taken) => {
 		const key = getRecommendationKey(recommendation);
 		if (!key || key.startsWith("|")) return;
@@ -2859,6 +2950,8 @@
 			);
 			const checkedAt = Math.floor(Date.now() / 1000);
 			state.snapshotRevision = snapshot.revision;
+			state.latestScriptVersion = String(snapshot.scriptRelease?.latestVersion || "");
+			state.scriptInstallUrl = String(snapshot.scriptRelease?.installUrl || "");
 			if (snapshot.unchanged && state.lastPayload) {
 				state.lastCheckedAt = checkedAt;
 				state.usingCachedPayload = false;
@@ -3165,12 +3258,14 @@
 	const unassignedCard = (member) => `
 		<div class="ocp-card need-more">
 			<div class="ocp-card-title">No assignment</div>
+			${member.reason ? `<div>${escapeHtml(member.reason)}</div>` : ""}
 			<div class="ocp-grid">
 				${member.bestCprCrimeName ? `<div class="ocp-label">Best fit</div><div class="ocp-value">${escapeHtml(member.bestCprCrimeName)}</div>` : ""}
 				${member.bestCprRoleName ? `<div class="ocp-label">Role</div><div class="ocp-value">${escapeHtml(member.bestCprRoleName)}</div>` : ""}
 				${member.bestCpr ? `<div class="ocp-label">CPR</div><div class="ocp-value">${escapeHtml(Math.round(Number(member.bestCpr)))}%</div>` : ""}
 				${member.availableAt ? `<div class="ocp-label">Available</div><div class="ocp-value">${escapeHtml(formatRelative(member.availableAt))}</div>` : ""}
 			</div>
+			${member.reasonCrimeId ? `<a class="ocp-card-link" href="${escapeHtml(getCrimeUrl(member.reasonCrimeId))}">${escapeHtml(compactCrimeLabel(member.reasonCrimeName, member.reasonCrimeId))}${member.reasonPosition ? ` / ${escapeHtml(member.reasonPosition)}` : ""}</a>` : ""}
 		</div>
 	`;
 
@@ -3415,6 +3510,9 @@
 		const feedback = state.targetFeedback;
 		const lastHighlightRoleCount = getHighlightRecommendations(state.lastHighlightRecommendation).length;
 		const highlightAgain = `<button class="ocp-button ocp-highlight-again" title="Highlight again"${!state.lastHighlightRecommendation || state.pendingHighlight ? " hidden" : ""}>${lastHighlightRoleCount > 1 ? "Find roles" : "Find role"}</button>`;
+		const updateLink = scriptUpdateAvailable() && state.scriptInstallUrl
+			? `<a class="ocp-update-link" href="${escapeHtml(state.scriptInstallUrl)}" target="_blank" rel="noreferrer" title="Install v${escapeHtml(state.latestScriptVersion)}">Update</a>`
+			: "";
 		const keyControls = savedKey
 			? `
 				<div class="ocp-row ocp-toolbar">
@@ -3437,6 +3535,7 @@
 						<span class="ocp-state-dot ${escapeHtml(stateTone)}" title="${escapeHtml(statusText || compactPanelSummary(state.lastPayload))}"></span>
 						<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
 						<span class="ocp-version">v${escapeHtml(SCRIPT_VERSION)}</span>
+						${updateLink}
 					</div>
 					<span class="ocp-target-feedback ${escapeHtml(feedback?.kind || "")}" aria-live="polite" title="${escapeHtml(feedback?.detail || feedback?.label || "")}"${feedback ? "" : " hidden"}>${escapeHtml(feedback?.label || "")}</span>
 				</div>
@@ -3460,7 +3559,7 @@
 						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
 						<tr><th>Actions</th><td>Display only. No joins or submissions.</td></tr>
 					</table>
-					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
+					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
 			</div>
 		`;
@@ -3485,6 +3584,11 @@
 		addTapHandler(panel.querySelector(".ocp-collapse"), (event) => {
 			event.stopPropagation();
 			toggleCollapsed();
+		});
+		panel.querySelectorAll(".ocp-update-link").forEach((link) => {
+			["pointerdown", "touchend", "click"].forEach((eventName) => {
+				link.addEventListener(eventName, (event) => event.stopPropagation());
+			});
 		});
 		addTapHandler(panel.querySelector(".ocp-highlight-again"), (event) => {
 			event.stopPropagation();
@@ -3540,6 +3644,10 @@
 		syncTargetFeedbackElement();
 		syncHighlightControls();
 		panel.querySelector(".ocp-save-refresh")?.addEventListener("click", () => refreshRecommendations(true));
+		addTapHandler(panel.querySelector(".ocp-copy-diagnostics"), (event) => {
+			event.stopPropagation();
+			void copyDiagnostics();
+		});
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
 			stopHighlightLock();
 			storage.remove(STORAGE_KEY);
