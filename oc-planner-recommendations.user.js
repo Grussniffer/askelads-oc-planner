@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.58
+// @version      0.2.59
 // @description  Shows your OC Planner recommendation on Torn's faction OC page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.58";
+	const SCRIPT_VERSION = "0.2.59";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -419,6 +419,61 @@
 			color: #b7ad9e;
 			font-size: 11px;
 		}
+		#${PANEL_ID} .ocp-cpr-overview {
+			margin-top: 5px;
+			padding: 5px 6px;
+			border: 1px solid #618f50;
+			border-radius: 7px;
+			background: linear-gradient(180deg, rgba(23, 48, 24, 0.86), rgba(14, 27, 15, 0.86));
+		}
+		#${PANEL_ID} .ocp-cpr-summary {
+			display: flex;
+			align-items: baseline;
+			gap: 6px;
+			min-width: 0;
+			white-space: nowrap;
+		}
+		#${PANEL_ID} .ocp-cpr-mode {
+			color: #f1e8d7;
+			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-cpr-counts {
+			display: flex;
+			align-items: baseline;
+			gap: 5px;
+			min-width: 0;
+			color: #b7ad9e;
+			font-size: 11px;
+		}
+		#${PANEL_ID} .ocp-cpr-counts strong {
+			color: #b8efa7;
+		}
+		#${PANEL_ID} .ocp-cpr-rule {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 2px;
+			color: #c7d8c1;
+			font-size: 10px;
+			line-height: 1.2;
+		}
+		#${PANEL_ID} .ocp-cpr-swatch {
+			width: 8px;
+			height: 8px;
+			flex: 0 0 8px;
+			border: 1px solid #a7ee9f;
+			border-radius: 2px;
+			background: #4f9b49;
+			box-shadow: 0 0 5px rgba(118, 210, 109, 0.68);
+		}
+		#${PANEL_ID} .ocp-cpr-warning {
+			margin-top: 4px;
+			padding-top: 4px;
+			border-top: 1px solid rgba(97, 143, 80, 0.42);
+		}
+		#${PANEL_ID} .ocp-cpr-warning .ocp-flexible-note {
+			margin: 0;
+		}
 		.${CPR_ELIGIBLE_ROLE_CLASS} {
 			outline: 3px solid #76d26d !important;
 			box-shadow: 0 0 0 3px rgba(118, 210, 109, 0.24), 0 0 16px rgba(118, 210, 109, 0.42) !important;
@@ -628,6 +683,9 @@
 			font-weight: 700;
 			color: #f0d48d;
 		}
+		#${PANEL_ID} .ocp-cpr-details summary {
+			padding: 5px 6px;
+		}
 		#${PANEL_ID} .ocp-flexible-body {
 			padding: 0 6px 6px;
 		}
@@ -781,6 +839,9 @@
 			#${PANEL_ID} .ocp-card {
 				margin-top: 7px;
 				padding: 7px;
+			}
+			#${PANEL_ID} .ocp-cpr-overview {
+				padding: 5px 6px;
 			}
 			#${PANEL_ID} .ocp-team-chips {
 				grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2966,9 +3027,7 @@
 		if (payload.cprSnapshotStatus === "refreshing") {
 			return `<div class="ocp-flexible-note ocp-muted"><strong>Refreshing OC and CPR data.</strong>${snapshotAge ? ` Current data was checked ${escapeHtml(snapshotAge)}.` : ""}</div>`;
 		}
-		return snapshotAge
-			? `<div class="ocp-flexible-note ocp-muted">OC and CPR data checked ${escapeHtml(snapshotAge)}.</div>`
-			: "";
+		return "";
 	};
 
 	const renderCprEligibilityResults = (payload) => {
@@ -2979,32 +3038,32 @@
 		const eligibleItems = eligibleCrimeGroups.map(cprEligibleCrimeCard).join("");
 		const unavailableCount = Number(payload.cprIneligibleCount || 0);
 		const missingCount = Number(payload.cprMissingCount || 0);
-		const summary = eligibleSlots.length
-			? `<strong>${eligibleSlots.length} open role${eligibleSlots.length === 1 ? "" : "s"}</strong> across ${eligibleCrimeGroups.length} OC${eligibleCrimeGroups.length === 1 ? "" : "s"} ${eligibleSlots.length === 1 ? "matches" : "match"} your faction's hard CPR requirements.`
-			: payload.cprOpenSlotCount
-				? "No currently open role matches your faction's CPR requirements."
-				: "No open role is currently available in the saved OC snapshot.";
-		const exclusions = [
+		const exclusionSummary = [
 			unavailableCount ? `${unavailableCount} outside your CPR limits` : "",
 			missingCount ? `${missingCount} missing role CPR` : "",
 		]
 			.filter(Boolean)
-			.map((item) => `<span>${escapeHtml(item)}</span>`)
-			.join("");
+			.join(" | ");
 		const snapshotStatus = renderCprSnapshotStatus(payload);
+		const roleCount = eligibleSlots.length;
+		const crimeCount = eligibleCrimeGroups.length;
+		const rule = roleCount
+			? "Only green roles are allowed; unmarked roles are not."
+			: "No green roles are allowed right now.";
 
 		return `
-			<div class="ocp-card next">
-				<div class="ocp-card-title">CPR Eligibility Mode</div>
-				<div>${summary}</div>
-				<div class="ocp-muted">Eligible means allowed by CPR, not assigned or reserved. Open eligible roles are outlined green in Torn automatically.</div>
-				${snapshotStatus}
-				${exclusions ? `<div class="ocp-mini-meta">${exclusions}</div>` : ""}
+			<div class="ocp-cpr-overview">
+				<div class="ocp-cpr-summary">
+					<span class="ocp-cpr-mode">CPR</span>
+					<span class="ocp-cpr-counts"><strong>${roleCount} allowed</strong><span>${crimeCount} OC${crimeCount === 1 ? "" : "s"}</span></span>
+				</div>
+				<div class="ocp-cpr-rule"><span class="ocp-cpr-swatch" aria-hidden="true"></span><span>${escapeHtml(rule)}</span></div>
+				${snapshotStatus ? `<div class="ocp-cpr-warning">${snapshotStatus}</div>` : ""}
 			</div>
-			${eligibleItems ? `<details class="ocp-flexible"${state.flexibleOpen ? " open" : ""}>
-				<summary>CPR-eligible OCs (${eligibleCrimeGroups.length})</summary>
+			${eligibleItems ? `<details class="ocp-flexible ocp-cpr-details"${state.flexibleOpen ? " open" : ""}>
+				<summary>Allowed roles (${roleCount})</summary>
 				<div class="ocp-flexible-body">
-					<div class="ocp-flexible-note ocp-muted"><strong>Allowed by CPR, not reserved.</strong> Green roles are open and CPR-eligible; open an OC to focus its eligible roles in yellow.</div>
+					<div class="ocp-flexible-note ocp-muted">Grouped across ${crimeCount} OC${crimeCount === 1 ? "" : "s"}. Select one to focus its allowed roles in yellow.${exclusionSummary ? ` ${escapeHtml(exclusionSummary)}.` : ""}</div>
 					${eligibleItems}
 				</div>
 			</details>` : ""}
