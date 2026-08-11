@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.62
+// @version      0.2.63
 // @description  Shows OC recommendations on Torn.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.62";
+	const SCRIPT_VERSION = "0.2.63";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -2748,6 +2748,18 @@
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
+		const hasCprProfile = (planner?.members || []).some(
+			(member) =>
+				Number(member?.memberId || member?.playerId || member?.player_id || member?.id || 0) ===
+				memberId
+		);
+		const cprMemberStatus = recommendationMode !== "cpr"
+			? ""
+			: hasCprProfile
+				? "ready"
+				: missingCpr
+					? "missing_cpr"
+					: "not_full_member";
 
 		return {
 			memberId,
@@ -2768,6 +2780,7 @@
 			cprIneligibleCount: cprEligibility.ineligibleCount,
 			cprMissingCount: cprEligibility.missingCprCount,
 			cprOpenSlotCount: cprEligibility.openSlotCount,
+			cprMemberStatus,
 			missingCpr,
 			warnings: planner?.warnings || [],
 		};
@@ -2792,6 +2805,7 @@
 		cprIneligibleCount: 0,
 		cprMissingCount: 0,
 		cprOpenSlotCount: 0,
+		cprMemberStatus: "",
 		missingCpr: false,
 		warnings: [],
 	});
@@ -3300,9 +3314,21 @@
 		const snapshotStatus = renderCprSnapshotStatus(payload);
 		const roleCount = eligibleSlots.length;
 		const crimeCount = eligibleCrimeGroups.length;
-		const rule = roleCount
-			? "Green roles are allowed."
-			: "No allowed roles.";
+		const openSlotCount = Number(payload.cprOpenSlotCount || 0);
+		let rule = "No allowed roles.";
+		if (roleCount) {
+			rule = "Green roles are allowed.";
+		} else if (payload.cprMemberStatus === "not_full_member") {
+			rule = "Recruit status: roles appear after full membership.";
+		} else if (payload.cprMemberStatus === "missing_cpr") {
+			rule = "No roles: your CPR data is missing.";
+		} else if (!openSlotCount) {
+			rule = "No open roles right now.";
+		} else if (unavailableCount && !missingCount) {
+			rule = "No roles within your CPR limits.";
+		} else if (missingCount) {
+			rule = "No roles: CPR is missing for these roles.";
+		}
 
 		return `
 			<div class="ocp-cpr-overview">
