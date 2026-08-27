@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.63
+// @version      0.2.64
 // @description  Shows OC recommendations on Torn.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.63";
+	const SCRIPT_VERSION = "0.2.64";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -33,7 +33,12 @@
 	const SCRIPT_ACCESS_STORAGE_KEY = "askeladds_oc_planner_script_access";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
 	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
+	const DISPLAY_MODE_STORAGE_KEY = "askeladds_oc_planner_display_mode";
 	const PANEL_ID = "askeladds-oc-planner-panel";
+	const IN_PAGE_WRAPPER_ID = "askeladds-oc-planner-inline-wrapper";
+	const IN_PAGE_HOST_ID = "askeladds-oc-planner-inline-host";
+	const IN_PAGE_CRIME_ID_SELECTOR =
+		"[data-crime-id], [data-crimeid], [data-oc-id], a[href*='crimeId'], a[href*='crimeID']";
 	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
 	const CPR_ELIGIBLE_ROLE_CLASS = "askeladds-oc-planner-role-cpr-eligible";
 	const REQUEST_TIMEOUT_MS = 60000;
@@ -83,6 +88,7 @@
 			GM_registerMenuCommand(name, callback);
 		}
 	};
+	const normalizeDisplayMode = (value) => value === "in-page" ? "in-page" : "floating";
 	const savedCollapsedPreference = String(storage.get(COLLAPSED_STORAGE_KEY, "") || "");
 	const initialCollapsed = savedCollapsedPreference
 		? savedCollapsedPreference === "1"
@@ -115,11 +121,33 @@
 		pageObserver: null,
 		domSyncTimer: undefined,
 		dragSuppressTapUntil: 0,
+		displayMode: normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE_KEY, "")),
+		panelPlacement: "floating",
+		inPageFallback: false,
 	};
 
 	let lastRenderedMarkup = "";
 
 	addStyle(`
+		#${IN_PAGE_WRAPPER_ID} {
+			box-sizing: border-box;
+			display: block;
+			grid-column: 1 / -1;
+			flex: 1 0 100%;
+			align-self: stretch;
+			width: 100%;
+			min-width: 0;
+			max-width: 100%;
+			margin: 8px 0;
+			clear: both;
+			list-style: none;
+		}
+		#${IN_PAGE_HOST_ID} {
+			display: block;
+			width: 100%;
+			min-width: 0;
+			max-width: 100%;
+		}
 		#${PANEL_ID} {
 			box-sizing: border-box;
 			position: fixed;
@@ -137,6 +165,32 @@
 			border-radius: 8px;
 			box-shadow: 0 16px 38px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(216, 164, 57, 0.08) inset;
 			overflow: hidden;
+		}
+		#${PANEL_ID}.ocp-in-page {
+			position: relative;
+			right: auto;
+			bottom: auto;
+			left: auto;
+			top: auto;
+			z-index: 1;
+			width: 100%;
+			max-width: none;
+			max-height: none;
+			margin: 0;
+			border-radius: 5px;
+			box-shadow: none;
+		}
+		#${PANEL_ID}.ocp-in-page.collapsed {
+			width: 100%;
+			box-shadow: none;
+		}
+		#${PANEL_ID}.ocp-in-page .ocp-header,
+		#${PANEL_ID}.ocp-in-page .ocp-header:hover {
+			cursor: pointer;
+			touch-action: manipulation;
+		}
+		#${PANEL_ID}.ocp-in-page .ocp-body {
+			max-height: min(62vh, 620px);
 		}
 		#${PANEL_ID}.collapsed .ocp-body {
 			display: none;
@@ -848,10 +902,41 @@
 		}
 		#${PANEL_ID} .ocp-privacy-actions {
 			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
 			gap: 5px;
 			justify-content: flex-end;
 			padding: 6px;
 			border-top: 1px solid #3b2c17;
+		}
+		#${PANEL_ID} .ocp-display-modes {
+			display: inline-flex;
+			align-items: center;
+			gap: 2px;
+			margin-right: auto;
+			padding: 2px;
+			border: 1px solid #4a3718;
+			border-radius: 6px;
+			background: rgba(5, 5, 4, 0.72);
+		}
+		#${PANEL_ID} .ocp-display-mode {
+			min-height: 24px;
+			border: 0;
+			border-radius: 4px;
+			padding: 3px 6px;
+			background: transparent;
+			color: #b7ad9e;
+			cursor: pointer;
+			font-weight: 700;
+		}
+		#${PANEL_ID} .ocp-display-mode.active {
+			background: #49300b;
+			color: #fff4d7;
+		}
+		#${PANEL_ID} .ocp-placement-note {
+			flex: 1 0 100%;
+			color: #9c8f7c;
+			font-size: 10px;
 		}
 		@media (max-width: 520px) {
 			.${JOIN_CUE_BADGE_CLASS} {
@@ -866,6 +951,14 @@
 				max-width: calc(100% - 16px);
 				max-height: min(60vh, calc(100vh - 16px));
 				font-size: 11px;
+			}
+			#${PANEL_ID}.ocp-in-page {
+				width: 100%;
+				max-width: 100%;
+				max-height: none;
+			}
+			#${PANEL_ID}.ocp-in-page .ocp-body {
+				max-height: min(58vh, 520px);
 			}
 			#${PANEL_ID}.collapsed {
 				width: min(210px, calc(100vw - 16px));
@@ -924,6 +1017,8 @@
 	`);
 
 	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(true));
+	registerMenuCommand("OC Planner: use floating display", () => setDisplayMode("floating"));
+	registerMenuCommand("OC Planner: use in-page display", () => setDisplayMode("in-page"));
 	registerMenuCommand("OC Planner: forget API key", () => {
 		stopHighlightLock();
 		storage.remove(STORAGE_KEY);
@@ -1427,6 +1522,7 @@
 
 	const removePanel = () => {
 		document.getElementById(PANEL_ID)?.remove();
+		removeInPageMount(false);
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
 		clearCprEligibilityHighlights();
@@ -1490,9 +1586,39 @@
 	};
 
 	const applyStoredPanelPosition = () => {
+		if (state.panelPlacement !== "floating") return;
 		const panel = document.getElementById(PANEL_ID);
 		const position = getStoredPanelPosition();
 		if (panel && position) setPanelPosition(panel, position);
+	};
+
+	const clearPanelPositionStyles = (panel) => {
+		if (!panel) return;
+		["left", "top", "right", "bottom"].forEach((property) =>
+			panel.style.removeProperty(property)
+		);
+	};
+
+	const removeInPageMount = (preservePanel = true) => {
+		const panel = document.getElementById(PANEL_ID);
+		const host = document.getElementById(IN_PAGE_HOST_ID);
+		const wrapper = document.getElementById(IN_PAGE_WRAPPER_ID);
+		if (preservePanel && panel && host?.contains(panel) && document.body) {
+			document.body.appendChild(panel);
+		}
+		wrapper?.remove();
+		if (!wrapper) host?.remove();
+	};
+
+	const setDisplayMode = (value) => {
+		const nextMode = normalizeDisplayMode(value);
+		state.displayMode = nextMode;
+		storage.set(DISPLAY_MODE_STORAGE_KEY, nextMode);
+		state.panelPlacement = "floating";
+		state.inPageFallback = false;
+		removeInPageMount(true);
+		lastRenderedMarkup = "";
+		render();
 	};
 
 	const formatTimestamp = (secondsOrIso) => {
@@ -1722,7 +1848,8 @@
 		!!element?.isConnected &&
 		(typeof element.getClientRects !== "function" || element.getClientRects().length > 0);
 
-	const isInsidePanel = (element) => !!element?.closest?.(`#${PANEL_ID}`);
+	const isInsidePanel = (element) =>
+		!!element?.closest?.(`#${PANEL_ID}, #${IN_PAGE_WRAPPER_ID}`);
 
 	const findCrimeElement = (crimeId, recommendation, requireActiveCrime = true) => {
 		const id = String(crimeId || "");
@@ -1775,6 +1902,114 @@
 			match ||
 			null;
 		return isWithinCrime(wrapper) ? wrapper : null;
+	};
+
+	const getLowestCommonAncestor = (left, right) => {
+		if (!left || !right) return null;
+		const leftAncestors = new Set();
+		let current = left;
+		while (current) {
+			leftAncestors.add(current);
+			current = current.parentElement;
+		}
+		current = right;
+		while (current && !leftAncestors.has(current)) current = current.parentElement;
+		return current || null;
+	};
+
+	const getGenericCrimeContainer = (element, crimeId) => {
+		const id = String(crimeId || "");
+		let current = element;
+		for (let depth = 0; current && depth < 9; depth += 1) {
+			if (current === document.body || current === document.documentElement) return null;
+			const crimeIds = new Set(
+				[current, ...current.querySelectorAll(IN_PAGE_CRIME_ID_SELECTOR)]
+					.map(getElementCrimeId)
+					.filter(Boolean)
+			);
+			if (
+				crimeIds.size === 1 &&
+				crimeIds.has(id) &&
+				current.querySelector?.(ROLE_TITLE_SELECTOR)
+			) {
+				return current;
+			}
+			current = current.parentElement;
+		}
+		return null;
+	};
+
+	const findInPageCrimeBoard = () => {
+		const candidates = Array.from(
+			document.querySelectorAll(IN_PAGE_CRIME_ID_SELECTOR)
+		).slice(0, 160);
+		const containersByCrimeId = new Map();
+		for (const candidate of candidates) {
+			if (isInsidePanel(candidate)) continue;
+			const crimeId = String(getElementCrimeId(candidate) || "");
+			if (!crimeId || containersByCrimeId.has(crimeId)) continue;
+			const container = getGenericCrimeContainer(candidate, crimeId);
+			if (!container || !isVisibleElement(container)) continue;
+			containersByCrimeId.set(crimeId, container);
+		}
+
+		const containers = [...new Set(containersByCrimeId.values())];
+		if (containers.length < 2) return null;
+		const board = containers
+			.slice(1)
+			.reduce((common, container) => getLowestCommonAncestor(common, container), containers[0]);
+		if (!board || board === document.body || board === document.documentElement) return null;
+
+		const unsafeTags = new Set([
+			"TABLE",
+			"TBODY",
+			"THEAD",
+			"TFOOT",
+			"TR",
+			"SELECT",
+			"OPTION",
+			"OPTGROUP",
+		]);
+		const parent = board.parentElement;
+		if (
+			!parent ||
+			unsafeTags.has(String(board.tagName || "").toUpperCase()) ||
+			unsafeTags.has(String(parent.tagName || "").toUpperCase()) ||
+			board.querySelectorAll(ROLE_TITLE_SELECTOR).length < 2
+		) {
+			return null;
+		}
+		return board;
+	};
+
+	const createInPageHost = () => {
+		const board = findInPageCrimeBoard();
+		const parent = board?.parentNode;
+		if (!board || !parent) return null;
+		const wrapper = document.createElement("div");
+		wrapper.id = IN_PAGE_WRAPPER_ID;
+		const host = document.createElement("div");
+		host.id = IN_PAGE_HOST_ID;
+		wrapper.appendChild(host);
+		parent.insertBefore(wrapper, board);
+		return host;
+	};
+
+	const resolvePanelMount = () => {
+		if (state.displayMode !== "in-page") {
+			removeInPageMount(true);
+			return { mount: document.body, placement: "floating", fallback: false };
+		}
+
+		let host = document.getElementById(IN_PAGE_HOST_ID);
+		if (!host?.isConnected) {
+			removeInPageMount(true);
+			host = createInPageHost();
+		}
+		if (host) return { mount: host, placement: "in-page", fallback: false };
+
+		removeInPageMount(true);
+		return { mount: document.body, placement: "floating", fallback: true };
 	};
 
 	const clearRecommendationHighlights = () => {
@@ -2123,6 +2358,9 @@
 			? new Date(state.lastAttemptAt).toISOString()
 			: null,
 		usingCachedPayload: state.usingCachedPayload,
+		displayMode: state.displayMode,
+		panelPlacement: state.panelPlacement,
+		inPageFallback: state.inPageFallback,
 		currentPageCrimeId: getCurrentPageCrimeId() || null,
 		recommendationCount: Number(state.lastPayload?.recommendations?.length || 0),
 		noPlanReason: state.lastPayload?.noPlanReason || null,
@@ -2842,6 +3080,7 @@
 	};
 
 	const attachPanelDragHandler = (panel) => {
+		if (state.panelPlacement !== "floating") return;
 		const header = panel?.querySelector(".ocp-header");
 		if (!header) return;
 
@@ -3513,13 +3752,24 @@
 		}
 
 		syncInteractiveState();
+		const mountState = resolvePanelMount();
+		const placementChanged =
+			state.panelPlacement !== mountState.placement ||
+			state.inPageFallback !== mountState.fallback;
+		state.panelPlacement = mountState.placement;
+		state.inPageFallback = mountState.fallback;
+		if (placementChanged) lastRenderedMarkup = "";
+
+		const panelMount = mountState.mount || document.body;
 		let panel = document.getElementById(PANEL_ID);
 		if (!panel) {
 			panel = document.createElement("div");
 			panel.id = PANEL_ID;
-			document.body.appendChild(panel);
-			if (state.collapsed) panel.classList.add("collapsed");
 		}
+		if (panel.parentNode !== panelMount) panelMount.appendChild(panel);
+		panel.classList.toggle("ocp-in-page", state.panelPlacement === "in-page");
+		panel.classList.toggle("collapsed", state.collapsed);
+		if (state.panelPlacement === "in-page") clearPanelPositionStyles(panel);
 
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
@@ -3553,6 +3803,15 @@
 					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
 				</div>
 			`;
+		const displayModeControls = `
+			<div class="ocp-display-modes" role="group" aria-label="Planner display">
+				<button type="button" class="ocp-display-mode${state.displayMode === "floating" ? " active" : ""}" data-display-mode="floating" aria-pressed="${state.displayMode === "floating"}">Floating</button>
+				<button type="button" class="ocp-display-mode${state.displayMode === "in-page" ? " active" : ""}" data-display-mode="in-page" aria-pressed="${state.displayMode === "in-page"}">In-page</button>
+			</div>
+		`;
+		const placementNote = state.inPageFallback
+			? `<div class="ocp-placement-note">In-page placement is unavailable on this Torn layout. Using Floating.</div>`
+			: "";
 
 		const markup = `
 			<div class="ocp-header">
@@ -3585,7 +3844,11 @@
 						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
 						<tr><th>Actions</th><td>Display only. No joins or submissions.</td></tr>
 					</table>
-					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
+					<div class="ocp-privacy-actions">
+						${displayModeControls}
+						${savedKey ? `<button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button>` : ""}
+						${placementNote}
+					</div>
 				</details>
 			</div>
 		`;
@@ -3628,6 +3891,12 @@
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
 		});
+		panel.querySelectorAll(".ocp-display-mode").forEach((button) => {
+			button.addEventListener("click", (event) => {
+				event.stopPropagation();
+				setDisplayMode(event.currentTarget.dataset.displayMode);
+			});
+		});
 		panel.querySelector(".ocp-flexible")?.addEventListener("toggle", (event) => {
 			state.flexibleOpen = !!event.currentTarget.open;
 		});
@@ -3658,6 +3927,7 @@
 				queueHighlightRecommendation(getLinkRecommendation());
 			};
 			const collapseAfterNavigationTap = () => {
+				if (state.panelPlacement !== "floating") return;
 				window.setTimeout(() => collapsePanelWithoutRender(), 50);
 			};
 			link.addEventListener("pointerdown", prepareOcNavigation);
@@ -3738,7 +4008,14 @@
 
 	const nodeTouchesOcDom = (node) => {
 		const element = node instanceof Element ? node : node?.parentElement;
-		if (!element || isInsidePanel(element)) return false;
+		if (!element) return false;
+		if (
+			state.displayMode === "in-page" &&
+			(element.id === IN_PAGE_WRAPPER_ID || element.querySelector?.(`#${IN_PAGE_WRAPPER_ID}`))
+		) {
+			return true;
+		}
+		if (isInsidePanel(element)) return false;
 		const selector =
 			`a[href*='crimeId'], [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot'], [class*='crime'], [class*='Crime'], h1, h2, h3, h4, h5, h6, .${JOIN_CUE_BADGE_CLASS}`;
 		return element.matches?.(selector) || !!element.querySelector?.(selector);
@@ -3750,8 +4027,15 @@
 			state.domSyncTimer = undefined;
 			syncPageActivation();
 			if (state.active) {
-				syncRecommendationJoinCues();
-				syncCprEligibilityHighlights();
+				if (
+					state.displayMode === "in-page" &&
+					(state.inPageFallback || !document.getElementById(IN_PAGE_HOST_ID)?.isConnected)
+				) {
+					render();
+				} else {
+					syncRecommendationJoinCues();
+					syncCprEligibilityHighlights();
+				}
 			}
 		}, delay);
 	};

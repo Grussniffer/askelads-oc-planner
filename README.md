@@ -4,11 +4,9 @@ Userscript for showing each faction member their personal OC Planner recommendat
 
 ## Setup
 
-1. Open `oc-planner-recommendations.user.js`.
-2. Set `BACKEND_BASE_URL` to the deployed backend
-3. Install the userscript in your userscript manager.
-4. Open `https://www.torn.com/factions.php?step=your&type=1#/tab=crimes`.
-5. Paste a Torn API key into the OC Planner panel and press Refresh.
+1. Install `oc-planner-recommendations.user.js` in your userscript manager.
+2. Open `https://www.torn.com/factions.php?step=your&type=1#/tab=crimes`.
+3. Paste a Torn API key into the OC Planner panel and press Refresh.
 
 ## Torn PDA
 
@@ -35,6 +33,12 @@ For faster startup, the script stores only that player's filtered recommendation
 Ready snapshots are checked every five minutes. Generating and failed snapshots retry after one minute, and returning to the browser tab does not issue another request when the latest check is still fresh. Script-access check-ins are limited to once every six hours unless the player, faction, script version, or planner run changes.
 
 The panel remembers whether the player left it collapsed. When a saved key has no prior display preference, it starts as a narrow summary strip showing the next action and expands on click.
+
+## Display modes
+
+The existing draggable floating panel remains the default. Open **Privacy** and choose **In-page** to place the planner directly above Torn's organized-crime list, or switch back to **Floating** at any time. The choice is stored only in that browser.
+
+In-page mode uses the live OC rows as its mount point. If Torn changes the page and the script cannot identify that location safely, it falls back to the floating panel instead of inserting itself into an uncertain part of the page. The same choices are also available from the userscript manager's menu commands.
 
 On Torn's OC list, each reserved assignment is labelled with the role and the OC it follows. The label changes when the exact role is opening, found, already joined, filled by another player, or missing. Hovering the label shows the exact OC id plus planned join and start times when available.
 
