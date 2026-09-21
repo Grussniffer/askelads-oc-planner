@@ -6,7 +6,7 @@ Userscript for showing each faction member their personal OC Planner recommendat
 
 1. Install `oc-planner-recommendations.user.js` in your userscript manager.
 2. Open `https://www.torn.com/factions.php?step=your&type=1#/tab=crimes`.
-3. Paste a Torn API key into the OC Planner panel and press Refresh.
+3. Expand the inline **OC Planner** section above the crimes, paste a Torn API key, and press Refresh.
 
 ## Torn PDA
 
@@ -32,13 +32,9 @@ For faster startup, the script stores only that player's filtered recommendation
 
 Ready snapshots are checked every five minutes. Generating and failed snapshots retry after one minute, and returning to the browser tab does not issue another request when the latest check is still fresh. Script-access check-ins are limited to once every six hours unless the player, faction, script version, or planner run changes.
 
-The panel remembers whether the player left it collapsed. When a saved key has no prior display preference, it starts as a narrow summary strip showing the next action and expands on click.
+The planner is part of the OC page's normal layout, above the native crime list, not a floating or draggable box. It appears only on your faction's organized crimes tab and disappears when you navigate elsewhere, including in-page navigation. It waits for Torn's content to load and remounts if Torn replaces that content; it never falls back to a body overlay. Old saved drag positions are ignored. No extra Torn API calls are introduced by mounting or expanding the inline section.
 
-## Display modes
-
-The existing draggable floating panel remains the default. Open **Privacy** and choose **In-page** to place the planner directly above Torn's organized-crime list, or switch back to **Floating** at any time. The choice is stored only in that browser.
-
-In-page mode uses the live OC rows as its mount point. If Torn changes the page and the script cannot identify that location safely, it falls back to the floating panel instead of inserting itself into an uncertain part of the page. The same choices are also available from the userscript manager's menu commands.
+The section remembers whether the player left it collapsed. When a saved key has no prior display preference, it starts as a full-width summary strip showing the next action. Use the title or expand button to open it (both also work with the keyboard). On mobile the section stays in the page flow and scrolls with the crimes, without covering join controls.
 
 On Torn's OC list, each reserved assignment is labelled with the role and the OC it follows. The label changes when the exact role is opening, found, already joined, filled by another player, or missing. Hovering the label shows the exact OC id plus planned join and start times when available.
 
@@ -49,3 +45,7 @@ Faction admins can choose between complete-plan recommendations and CPR eligibil
 CPR eligibility mode pauses complete-plan generation and scheduled optimizer refreshes. A separate lightweight OC and CPR snapshot refreshes every 30 minutes without running the assignment optimizer or replacing the last complete plan. While the first lightweight refresh is running, the userscript can temporarily use the last complete-plan snapshot and labels that fallback clearly.
 
 Switching back to complete-plan mode starts a fresh backend generation immediately. Its generating, ready, stale, or failed state survives closing the admin page, and the userscript hides retained old assignments until the new plan has been saved.
+
+## Tests
+
+Run `pnpm install --frozen-lockfile`, `pnpm exec playwright install chromium`, then `pnpm test`. To use an installed Edge instead, set `PLAYWRIGHT_CHANNEL=msedge`. The browser tests run the installable userscript against local HTML fixtures with all requests mocked, including OC-only activation, SPA navigation, late/replaced content, keyboard/mobile layout, native role highlights, and request counts. They do not use a live Torn account or API key.

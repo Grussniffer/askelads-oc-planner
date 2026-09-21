@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.64
-// @description  Shows OC recommendations on Torn.
+// @version      0.2.65
+// @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
 // @updateURL    https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.meta.js
@@ -25,18 +25,14 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.64";
+	const SCRIPT_VERSION = "0.2.65";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
 	const PAYLOAD_STORAGE_KEY = "askeladds_oc_planner_member_payload";
 	const SCRIPT_ACCESS_STORAGE_KEY = "askeladds_oc_planner_script_access";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
-	const POSITION_STORAGE_KEY = "askeladds_oc_planner_position";
-	const DISPLAY_MODE_STORAGE_KEY = "askeladds_oc_planner_display_mode";
 	const PANEL_ID = "askeladds-oc-planner-panel";
-	const IN_PAGE_WRAPPER_ID = "askeladds-oc-planner-inline-wrapper";
-	const IN_PAGE_HOST_ID = "askeladds-oc-planner-inline-host";
 	const IN_PAGE_CRIME_ID_SELECTOR =
 		"[data-crime-id], [data-crimeid], [data-oc-id], a[href*='crimeId'], a[href*='crimeID']";
 	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
@@ -46,7 +42,6 @@
 	const ACTIVE_REFRESH_MS = 60 * 1000;
 	const PROFILE_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 	const SCRIPT_ACCESS_INTERVAL_MS = 6 * 60 * 60 * 1000;
-	const PANEL_EDGE_GAP = 8;
 	const isTornPda =
 		typeof window.PDA_httpGet === "function" ||
 		typeof window.PDA_httpPost === "function";
@@ -88,7 +83,6 @@
 			GM_registerMenuCommand(name, callback);
 		}
 	};
-	const normalizeDisplayMode = (value) => value === "in-page" ? "in-page" : "floating";
 	const savedCollapsedPreference = String(storage.get(COLLAPSED_STORAGE_KEY, "") || "");
 	const initialCollapsed = savedCollapsedPreference
 		? savedCollapsedPreference === "1"
@@ -120,84 +114,30 @@
 		highlightRetryQueued: false,
 		pageObserver: null,
 		domSyncTimer: undefined,
-		dragSuppressTapUntil: 0,
-		displayMode: normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE_KEY, "")),
-		panelPlacement: "floating",
-		inPageFallback: false,
 	};
 
 	let lastRenderedMarkup = "";
 
 	addStyle(`
-		#${IN_PAGE_WRAPPER_ID} {
-			box-sizing: border-box;
-			display: block;
-			grid-column: 1 / -1;
-			flex: 1 0 100%;
-			align-self: stretch;
-			width: 100%;
-			min-width: 0;
-			max-width: 100%;
-			margin: 8px 0;
-			clear: both;
-			list-style: none;
-		}
-		#${IN_PAGE_HOST_ID} {
-			display: block;
-			width: 100%;
-			min-width: 0;
-			max-width: 100%;
-		}
 		#${PANEL_ID} {
 			box-sizing: border-box;
-			position: fixed;
-			right: 14px;
-			bottom: 54px;
-			z-index: 999999;
-			width: min(318px, calc(100vw - 28px));
-			max-height: calc(100vh - 28px);
+			position: relative;
+			width: 100%;
+			min-width: 0;
+			margin: 8px 0;
+			clear: both;
 			font: 12px/1.35 Arial, Helvetica, sans-serif;
 			color: #f1e8d7;
 			background:
 				linear-gradient(145deg, rgba(31, 23, 14, 0.97), rgba(9, 8, 7, 0.98) 58%),
 				#0d0b09;
-			border: 1px solid #5c4318;
-			border-radius: 8px;
-			box-shadow: 0 16px 38px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(216, 164, 57, 0.08) inset;
+			border: 0;
+			border-radius: 0;
+			box-shadow: none;
 			overflow: hidden;
-		}
-		#${PANEL_ID}.ocp-in-page {
-			position: relative;
-			right: auto;
-			bottom: auto;
-			left: auto;
-			top: auto;
-			z-index: 1;
-			width: 100%;
-			max-width: none;
-			max-height: none;
-			margin: 0;
-			border-radius: 5px;
-			box-shadow: none;
-		}
-		#${PANEL_ID}.ocp-in-page.collapsed {
-			width: 100%;
-			box-shadow: none;
-		}
-		#${PANEL_ID}.ocp-in-page .ocp-header,
-		#${PANEL_ID}.ocp-in-page .ocp-header:hover {
-			cursor: pointer;
-			touch-action: manipulation;
-		}
-		#${PANEL_ID}.ocp-in-page .ocp-body {
-			max-height: min(62vh, 620px);
 		}
 		#${PANEL_ID}.collapsed .ocp-body {
 			display: none;
-		}
-		#${PANEL_ID}.collapsed {
-			width: min(230px, calc(100vw - 28px));
-			box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
 		}
 		#${PANEL_ID}.collapsed .ocp-header {
 			border-bottom: 0;
@@ -216,21 +156,18 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			gap: 4px;
-			padding: 4px 6px;
-			background: linear-gradient(180deg, rgba(35, 25, 14, 0.96), rgba(14, 11, 8, 0.96));
+			gap: 8px;
+			padding: 7px 8px;
+			background: linear-gradient(180deg, #383838, #232323);
 			border-bottom: 1px solid #5c4318;
-			cursor: pointer;
-			user-select: none;
-			touch-action: none;
-		}
-		#${PANEL_ID} .ocp-header:hover {
-			cursor: move;
-		}
-		#${PANEL_ID}.ocp-dragging {
-			transition: none;
+			touch-action: auto;
 		}
 		#${PANEL_ID} .ocp-title {
+			border: 0;
+			background: none;
+			padding: 3px 0;
+			text-align: left;
+			cursor: pointer;
 			min-width: 0;
 			flex: 0 1 auto;
 			overflow: hidden;
@@ -360,10 +297,12 @@
 			color: #ffe5e5;
 		}
 		#${PANEL_ID} .ocp-body {
-			padding: 6px;
-			max-height: calc(100vh - 64px);
-			overflow-y: auto;
-			overscroll-behavior: contain;
+			padding: 8px;
+		}
+		#${PANEL_ID} button:focus-visible,
+		#${PANEL_ID} a:focus-visible {
+			outline: 2px solid #f4d990;
+			outline-offset: 2px;
 		}
 		#${PANEL_ID} .ocp-row {
 			display: flex;
@@ -909,35 +848,6 @@
 			padding: 6px;
 			border-top: 1px solid #3b2c17;
 		}
-		#${PANEL_ID} .ocp-display-modes {
-			display: inline-flex;
-			align-items: center;
-			gap: 2px;
-			margin-right: auto;
-			padding: 2px;
-			border: 1px solid #4a3718;
-			border-radius: 6px;
-			background: rgba(5, 5, 4, 0.72);
-		}
-		#${PANEL_ID} .ocp-display-mode {
-			min-height: 24px;
-			border: 0;
-			border-radius: 4px;
-			padding: 3px 6px;
-			background: transparent;
-			color: #b7ad9e;
-			cursor: pointer;
-			font-weight: 700;
-		}
-		#${PANEL_ID} .ocp-display-mode.active {
-			background: #49300b;
-			color: #fff4d7;
-		}
-		#${PANEL_ID} .ocp-placement-note {
-			flex: 1 0 100%;
-			color: #9c8f7c;
-			font-size: 10px;
-		}
 		@media (max-width: 520px) {
 			.${JOIN_CUE_BADGE_CLASS} {
 				max-width: 52vw;
@@ -945,23 +855,7 @@
 				font-size: 10px;
 			}
 			#${PANEL_ID} {
-				right: 8px;
-				bottom: 8px;
-				width: calc(100vw - 16px);
-				max-width: calc(100% - 16px);
-				max-height: min(60vh, calc(100vh - 16px));
 				font-size: 11px;
-			}
-			#${PANEL_ID}.ocp-in-page {
-				width: 100%;
-				max-width: 100%;
-				max-height: none;
-			}
-			#${PANEL_ID}.ocp-in-page .ocp-body {
-				max-height: min(58vh, 520px);
-			}
-			#${PANEL_ID}.collapsed {
-				width: min(210px, calc(100vw - 16px));
 			}
 			#${PANEL_ID} .ocp-header {
 				min-height: 34px;
@@ -974,7 +868,6 @@
 			}
 			#${PANEL_ID} .ocp-body {
 				padding: 8px;
-				max-height: calc(min(60vh, 100vh - 16px) - 39px);
 			}
 			#${PANEL_ID} .ocp-row {
 				gap: 5px;
@@ -1017,8 +910,6 @@
 	`);
 
 	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(true));
-	registerMenuCommand("OC Planner: use floating display", () => setDisplayMode("floating"));
-	registerMenuCommand("OC Planner: use in-page display", () => setDisplayMode("in-page"));
 	registerMenuCommand("OC Planner: forget API key", () => {
 		stopHighlightLock();
 		storage.remove(STORAGE_KEY);
@@ -1038,15 +929,6 @@
 		state.progress = "";
 		state.disclosureOpen = false;
 		render();
-	});
-	registerMenuCommand("OC Planner: reset position", () => {
-		storage.remove(POSITION_STORAGE_KEY);
-		const panel = document.getElementById(PANEL_ID);
-		if (!panel) return;
-		panel.style.left = "";
-		panel.style.top = "";
-		panel.style.right = "";
-		panel.style.bottom = "";
 	});
 
 	const escapeHtml = (value) =>
@@ -1510,19 +1392,43 @@
 	const isOcCrimesPage = () => {
 		if (isChallengePage()) return false;
 		const url = new URL(window.location.href);
-		const hash = decodeURIComponent(url.hash || "").toLowerCase();
-		const fullUrl = decodeURIComponent(window.location.href).toLowerCase();
+		let hash = url.hash.replace(/^#\/?/, "");
+		// Torn/PDA can encode the entire fragment. Malformed escapes must not stop the script.
+		if (!hash.includes("=")) {
+			try { hash = decodeURIComponent(hash).replace(/^\//, ""); } catch {}
+		}
+		const hashParams = new URLSearchParams(hash);
 		return (
 			url.hostname.replace(/^www\./, "") === "torn.com" &&
 			url.pathname === "/factions.php" &&
-			(url.searchParams.get("step") === "your" || fullUrl.includes("step=your")) &&
-			(hash.includes("tab=crimes") || fullUrl.includes("tab=crimes"))
+			url.searchParams.get("step") === "your" &&
+			(hash ? hashParams.get("tab") : url.searchParams.get("tab")) === "crimes"
 		);
+	};
+
+	const INLINE_SCOPE_SELECTOR = "#mainContainer, main, [role='main'], .content-wrapper";
+	const OC_ROOT_SELECTOR = "#faction-crimes-root, #faction-crimes, [data-oc-root]";
+	const getInlineMount = () => {
+		const scope = document.querySelector(INLINE_SCOPE_SELECTOR);
+		if (!scope || scope === document.body || scope === document.documentElement) return null;
+		const root = scope.querySelector(OC_ROOT_SELECTOR) || findInPageCrimeBoard(scope);
+		const content = scope.querySelector(".content-wrapper") || scope;
+		let before = root || Array.from(content.children).find((child) => child.id !== PANEL_ID) || null;
+		let parent = root?.parentElement || content;
+		// Like Warbuddy, stay outside native flex/grid/card layout rather than adding another card.
+		while (parent && scope.contains(parent)) {
+			const display = window.getComputedStyle(parent).display;
+			if (["block", "flow-root"].includes(display) && !parent.closest("[hidden], aside, nav")) {
+				return { parent, before };
+			}
+			before = parent;
+			parent = parent.parentElement;
+		}
+		return null; // Wait for Torn's page content; never fall back to a body overlay.
 	};
 
 	const removePanel = () => {
 		document.getElementById(PANEL_ID)?.remove();
-		removeInPageMount(false);
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
 		clearCprEligibilityHighlights();
@@ -1536,89 +1442,6 @@
 			window.clearTimeout(state.autoRefreshTimer);
 			state.autoRefreshTimer = undefined;
 		}
-	};
-
-	const getStoredPanelPosition = () => {
-		const raw = storage.get(POSITION_STORAGE_KEY, "");
-		if (!raw) return null;
-
-		try {
-			const position = JSON.parse(String(raw));
-			const left = Number(position?.left);
-			const top = Number(position?.top);
-			if (Number.isFinite(left) && Number.isFinite(top)) return { left, top };
-		} catch {}
-
-		storage.remove(POSITION_STORAGE_KEY);
-		return null;
-	};
-
-	const savePanelPosition = (position) => {
-		storage.set(
-			POSITION_STORAGE_KEY,
-			JSON.stringify({
-				left: Math.round(position.left),
-				top: Math.round(position.top),
-			})
-		);
-	};
-
-	const clampPanelPosition = (panel, left, top) => {
-		const width = panel.offsetWidth || panel.getBoundingClientRect().width || 340;
-		const height = panel.offsetHeight || panel.getBoundingClientRect().height || 80;
-		const maxLeft = Math.max(PANEL_EDGE_GAP, window.innerWidth - width - PANEL_EDGE_GAP);
-		const maxTop = Math.max(PANEL_EDGE_GAP, window.innerHeight - height - PANEL_EDGE_GAP);
-
-		return {
-			left: Math.min(Math.max(PANEL_EDGE_GAP, left), maxLeft),
-			top: Math.min(Math.max(PANEL_EDGE_GAP, top), maxTop),
-		};
-	};
-
-	const setPanelPosition = (panel, position, persist = false) => {
-		if (!panel || !position) return;
-		const clamped = clampPanelPosition(panel, position.left, position.top);
-		panel.style.left = `${clamped.left}px`;
-		panel.style.top = `${clamped.top}px`;
-		panel.style.right = "auto";
-		panel.style.bottom = "auto";
-		if (persist) savePanelPosition(clamped);
-	};
-
-	const applyStoredPanelPosition = () => {
-		if (state.panelPlacement !== "floating") return;
-		const panel = document.getElementById(PANEL_ID);
-		const position = getStoredPanelPosition();
-		if (panel && position) setPanelPosition(panel, position);
-	};
-
-	const clearPanelPositionStyles = (panel) => {
-		if (!panel) return;
-		["left", "top", "right", "bottom"].forEach((property) =>
-			panel.style.removeProperty(property)
-		);
-	};
-
-	const removeInPageMount = (preservePanel = true) => {
-		const panel = document.getElementById(PANEL_ID);
-		const host = document.getElementById(IN_PAGE_HOST_ID);
-		const wrapper = document.getElementById(IN_PAGE_WRAPPER_ID);
-		if (preservePanel && panel && host?.contains(panel) && document.body) {
-			document.body.appendChild(panel);
-		}
-		wrapper?.remove();
-		if (!wrapper) host?.remove();
-	};
-
-	const setDisplayMode = (value) => {
-		const nextMode = normalizeDisplayMode(value);
-		state.displayMode = nextMode;
-		storage.set(DISPLAY_MODE_STORAGE_KEY, nextMode);
-		state.panelPlacement = "floating";
-		state.inPageFallback = false;
-		removeInPageMount(true);
-		lastRenderedMarkup = "";
-		render();
 	};
 
 	const formatTimestamp = (secondsOrIso) => {
@@ -1849,7 +1672,7 @@
 		(typeof element.getClientRects !== "function" || element.getClientRects().length > 0);
 
 	const isInsidePanel = (element) =>
-		!!element?.closest?.(`#${PANEL_ID}, #${IN_PAGE_WRAPPER_ID}`);
+		!!element?.closest?.(`#${PANEL_ID}`);
 
 	const findCrimeElement = (crimeId, recommendation, requireActiveCrime = true) => {
 		const id = String(crimeId || "");
@@ -1939,9 +1762,9 @@
 		return null;
 	};
 
-	const findInPageCrimeBoard = () => {
+	const findInPageCrimeBoard = (scope) => {
 		const candidates = Array.from(
-			document.querySelectorAll(IN_PAGE_CRIME_ID_SELECTOR)
+			scope.querySelectorAll(IN_PAGE_CRIME_ID_SELECTOR)
 		).slice(0, 160);
 		const containersByCrimeId = new Map();
 		for (const candidate of candidates) {
@@ -1958,7 +1781,7 @@
 		const board = containers
 			.slice(1)
 			.reduce((common, container) => getLowestCommonAncestor(common, container), containers[0]);
-		if (!board || board === document.body || board === document.documentElement) return null;
+		if (!board || board === scope || !scope.contains(board) || board === document.body || board === document.documentElement) return null;
 
 		const unsafeTags = new Set([
 			"TABLE",
@@ -1980,36 +1803,6 @@
 			return null;
 		}
 		return board;
-	};
-
-	const createInPageHost = () => {
-		const board = findInPageCrimeBoard();
-		const parent = board?.parentNode;
-		if (!board || !parent) return null;
-		const wrapper = document.createElement("div");
-		wrapper.id = IN_PAGE_WRAPPER_ID;
-		const host = document.createElement("div");
-		host.id = IN_PAGE_HOST_ID;
-		wrapper.appendChild(host);
-		parent.insertBefore(wrapper, board);
-		return host;
-	};
-
-	const resolvePanelMount = () => {
-		if (state.displayMode !== "in-page") {
-			removeInPageMount(true);
-			return { mount: document.body, placement: "floating", fallback: false };
-		}
-
-		let host = document.getElementById(IN_PAGE_HOST_ID);
-		if (!host?.isConnected) {
-			removeInPageMount(true);
-			host = createInPageHost();
-		}
-		if (host) return { mount: host, placement: "in-page", fallback: false };
-
-		removeInPageMount(true);
-		return { mount: document.body, placement: "floating", fallback: true };
 	};
 
 	const clearRecommendationHighlights = () => {
@@ -2358,9 +2151,8 @@
 			? new Date(state.lastAttemptAt).toISOString()
 			: null,
 		usingCachedPayload: state.usingCachedPayload,
-		displayMode: state.displayMode,
-		panelPlacement: state.panelPlacement,
-		inPageFallback: state.inPageFallback,
+		panelPlacement: "in-page",
+		panelMounted: !!document.getElementById(PANEL_ID)?.isConnected,
 		currentPageCrimeId: getCurrentPageCrimeId() || null,
 		recommendationCount: Number(state.lastPayload?.recommendations?.length || 0),
 		noPlanReason: state.lastPayload?.noPlanReason || null,
@@ -3067,88 +2859,18 @@
 		if (!element) return;
 		let lastTouchAt = 0;
 		element.addEventListener("touchend", (event) => {
-			if (Date.now() < state.dragSuppressTapUntil) return;
 			lastTouchAt = Date.now();
 			event.preventDefault();
 			handler(event);
 		});
 		element.addEventListener("click", (event) => {
-			if (Date.now() < state.dragSuppressTapUntil) return;
 			if (Date.now() - lastTouchAt < 500) return;
 			handler(event);
 		});
 	};
 
-	const attachPanelDragHandler = (panel) => {
-		if (state.panelPlacement !== "floating") return;
-		const header = panel?.querySelector(".ocp-header");
-		if (!header) return;
-
-		let drag = null;
-		const stopDrag = (event) => {
-			if (!drag || event.pointerId !== drag.pointerId) return;
-			header.releasePointerCapture?.(event.pointerId);
-			panel.classList.remove("ocp-dragging");
-			if (drag.moved) {
-				event.preventDefault();
-				state.dragSuppressTapUntil = Date.now() + 700;
-				const rect = panel.getBoundingClientRect();
-				setPanelPosition(panel, { left: rect.left, top: rect.top }, true);
-			}
-			drag = null;
-		};
-
-		header.addEventListener("pointerdown", (event) => {
-			if (event.button !== undefined && event.button !== 0) return;
-			if (event.target?.closest?.(".ocp-actions, button, input, a, summary, details")) return;
-			const rect = panel.getBoundingClientRect();
-			drag = {
-				pointerId: event.pointerId,
-				startX: event.clientX,
-				startY: event.clientY,
-				left: rect.left,
-				top: rect.top,
-				moved: false,
-			};
-			header.setPointerCapture?.(event.pointerId);
-		});
-
-		header.addEventListener("pointermove", (event) => {
-			if (!drag || event.pointerId !== drag.pointerId) return;
-			const dx = event.clientX - drag.startX;
-			const dy = event.clientY - drag.startY;
-			if (!drag.moved && Math.hypot(dx, dy) < 6) return;
-			drag.moved = true;
-			state.dragSuppressTapUntil = Date.now() + 700;
-			panel.classList.add("ocp-dragging");
-			event.preventDefault();
-			setPanelPosition(panel, { left: drag.left + dx, top: drag.top + dy });
-		});
-
-		header.addEventListener("pointerup", stopDrag);
-		header.addEventListener("pointercancel", stopDrag);
-	};
-
-	const collapsePanelWithoutRender = () => {
-		state.collapsed = true;
-		const panel = document.getElementById(PANEL_ID);
-		panel?.classList.add("collapsed");
-		const title = panel?.querySelector(".ocp-title");
-		if (title) {
-			const memberName = state.lastPayload?.memberName || state.profile?.name || "Askelads OC";
-			const compactTitle = `${memberName} - ${compactPanelSummary(state.lastPayload)}`;
-			title.textContent = compactTitle;
-			title.title = compactTitle;
-		}
-		const collapseButton = panel?.querySelector(".ocp-collapse");
-		if (collapseButton) {
-			collapseButton.textContent = "+";
-			collapseButton.title = "Expand";
-		}
-	};
-
 	const refreshRecommendations = async (force) => {
-		if (state.loading) return;
+		if (state.loading || !state.active || !isOcCrimesPage()) return;
 
 		const keyInput = document.querySelector(`#${PANEL_ID} .ocp-api-key`);
 		const key = String(keyInput?.value || getStoredKey()).trim();
@@ -3173,6 +2895,11 @@
 				render();
 				profile = await getProfileWithKey(key);
 				saveCachedProfile(key, profile);
+			}
+			if (!state.active || !isOcCrimesPage()) {
+				state.lastAttemptAt = 0;
+				state.progress = "";
+				return;
 			}
 			const currentFactionId = getPlannerFactionId(profile);
 			if (!currentFactionId) {
@@ -3202,6 +2929,11 @@
 				force
 			);
 			const checkedAt = Math.floor(Date.now() / 1000);
+			if (!state.active || !isOcCrimesPage()) {
+				state.lastAttemptAt = 0;
+				state.progress = "";
+				return;
+			}
 			state.snapshotRevision = snapshot.revision;
 			state.latestScriptVersion = String(snapshot.scriptRelease?.latestVersion || "");
 			state.scriptInstallUrl = String(snapshot.scriptRelease?.installUrl || "");
@@ -3290,6 +3022,8 @@
 
 	const scheduleAutoRefresh = (delay = getNextRefreshDelay()) => {
 		if (state.autoRefreshTimer) window.clearTimeout(state.autoRefreshTimer);
+		state.autoRefreshTimer = undefined;
+		if (!state.active || !isOcCrimesPage() || !getStoredKey()) return;
 		state.autoRefreshTimer = window.setTimeout(() => {
 			if (document.visibilityState === "hidden") {
 				scheduleAutoRefresh(delay);
@@ -3752,24 +3486,23 @@
 		}
 
 		syncInteractiveState();
-		const mountState = resolvePanelMount();
-		const placementChanged =
-			state.panelPlacement !== mountState.placement ||
-			state.inPageFallback !== mountState.fallback;
-		state.panelPlacement = mountState.placement;
-		state.inPageFallback = mountState.fallback;
-		if (placementChanged) lastRenderedMarkup = "";
-
-		const panelMount = mountState.mount || document.body;
 		let panel = document.getElementById(PANEL_ID);
-		if (!panel) {
-			panel = document.createElement("div");
-			panel.id = PANEL_ID;
+		const mount = getInlineMount();
+		if (!mount) {
+			panel?.remove();
+			lastRenderedMarkup = "";
+			return;
 		}
-		if (panel.parentNode !== panelMount) panelMount.appendChild(panel);
-		panel.classList.toggle("ocp-in-page", state.panelPlacement === "in-page");
-		panel.classList.toggle("collapsed", state.collapsed);
-		if (state.panelPlacement === "in-page") clearPanelPositionStyles(panel);
+		if (!panel) {
+			panel = document.createElement("section");
+			panel.id = PANEL_ID;
+			panel.setAttribute("aria-label", "Askelads OC Planner");
+			lastRenderedMarkup = "";
+			if (state.collapsed) panel.classList.add("collapsed");
+		}
+		if (panel.parentElement !== mount.parent || panel.nextElementSibling !== mount.before) {
+			mount.parent.insertBefore(panel, mount.before);
+		}
 
 		const savedKey = getStoredKey();
 		const backendConfigured = !/YOUR_BACKEND_HOST/i.test(getBackendBaseUrl());
@@ -3780,7 +3513,7 @@
 			"Askelads OC";
 		const headerName = collapsed
 			? `${memberName} - ${compactPanelSummary(state.lastPayload)}`
-			: memberName;
+			: `OC Planner - ${memberName}`;
 		const statusText = plannerStatusText();
 		const stateTone = panelStateTone();
 		const feedback = state.targetFeedback;
@@ -3799,26 +3532,16 @@
 			: `
 				<div class="ocp-muted">Torn API key</div>
 				<div class="ocp-row">
-					<input class="ocp-input ocp-api-key" type="password" value="" placeholder="Paste Torn API key">
+					<input class="ocp-input ocp-api-key" type="password" value="" aria-label="Torn API key" placeholder="Paste Torn API key">
 					<button class="ocp-button primary ocp-save-refresh">${state.loading ? "Loading" : "Refresh"}</button>
 				</div>
 			`;
-		const displayModeControls = `
-			<div class="ocp-display-modes" role="group" aria-label="Planner display">
-				<button type="button" class="ocp-display-mode${state.displayMode === "floating" ? " active" : ""}" data-display-mode="floating" aria-pressed="${state.displayMode === "floating"}">Floating</button>
-				<button type="button" class="ocp-display-mode${state.displayMode === "in-page" ? " active" : ""}" data-display-mode="in-page" aria-pressed="${state.displayMode === "in-page"}">In-page</button>
-			</div>
-		`;
-		const placementNote = state.inPageFallback
-			? `<div class="ocp-placement-note">In-page placement is unavailable on this Torn layout. Using Floating.</div>`
-			: "";
-
 		const markup = `
 			<div class="ocp-header">
 				<div class="ocp-title-group">
 					<div class="ocp-title-line">
 						<span class="ocp-state-dot ${escapeHtml(stateTone)}" title="${escapeHtml(statusText || compactPanelSummary(state.lastPayload))}"></span>
-						<div class="ocp-title" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</div>
+						<button type="button" class="ocp-title" aria-expanded="${!collapsed}" aria-controls="${PANEL_ID}-body" title="${escapeHtml(headerName)}">${escapeHtml(headerName)}</button>
 						<span class="ocp-version">v${escapeHtml(SCRIPT_VERSION)}</span>
 						${updateLink}
 					</div>
@@ -3827,10 +3550,10 @@
 				<div class="ocp-actions">
 					${highlightAgain}
 					<button class="ocp-button ocp-highlight-stop" title="Stop highlight"${state.pendingHighlight ? "" : " hidden"}>Stop</button>
-					<button class="ocp-icon-button ocp-collapse" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
+					<button type="button" class="ocp-icon-button ocp-collapse" aria-expanded="${!collapsed}" aria-controls="${PANEL_ID}-body" aria-label="${collapsed ? "Expand OC Planner" : "Collapse OC Planner"}" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
 				</div>
 			</div>
-			<div class="ocp-body">
+			<div class="ocp-body" id="${PANEL_ID}-body">
 				${backendConfigured ? "" : `<div class="ocp-error">Set BACKEND_BASE_URL in the userscript before using it.</div>`}
 				${keyControls}
 				${!savedKey && state.progress ? `<div class="ocp-status">${escapeHtml(state.progress)}</div>` : ""}
@@ -3844,11 +3567,7 @@
 						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
 						<tr><th>Actions</th><td>Display only. No joins or submissions.</td></tr>
 					</table>
-					<div class="ocp-privacy-actions">
-						${displayModeControls}
-						${savedKey ? `<button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button>` : ""}
-						${placementNote}
-					</div>
+					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
 			</div>
 		`;
@@ -3860,16 +3579,17 @@
 			syncCprEligibilityHighlights();
 			return;
 		}
+		const focusedToggle = panel.querySelector(".ocp-title:focus, .ocp-collapse:focus");
+		const focusedClass = focusedToggle?.classList.contains("ocp-collapse") ? ".ocp-collapse" : ".ocp-title";
 		panel.innerHTML = markup;
 		lastRenderedMarkup = markup;
 		panel.classList.toggle("collapsed", state.collapsed);
-		applyStoredPanelPosition();
-		attachPanelDragHandler(panel);
+		if (focusedToggle) panel.querySelector(focusedClass)?.focus({ preventScroll: true });
 
 		const toggleCollapsed = () => {
 			setCollapsed(!state.collapsed);
 		};
-		addTapHandler(panel.querySelector(".ocp-header"), toggleCollapsed);
+		addTapHandler(panel.querySelector(".ocp-title"), toggleCollapsed);
 		addTapHandler(panel.querySelector(".ocp-collapse"), (event) => {
 			event.stopPropagation();
 			toggleCollapsed();
@@ -3890,12 +3610,6 @@
 		});
 		panel.querySelector(".ocp-disclosure")?.addEventListener("toggle", (event) => {
 			state.disclosureOpen = !!event.currentTarget.open;
-		});
-		panel.querySelectorAll(".ocp-display-mode").forEach((button) => {
-			button.addEventListener("click", (event) => {
-				event.stopPropagation();
-				setDisplayMode(event.currentTarget.dataset.displayMode);
-			});
 		});
 		panel.querySelector(".ocp-flexible")?.addEventListener("toggle", (event) => {
 			state.flexibleOpen = !!event.currentTarget.open;
@@ -3926,15 +3640,9 @@
 			const prepareOcNavigation = () => {
 				queueHighlightRecommendation(getLinkRecommendation());
 			};
-			const collapseAfterNavigationTap = () => {
-				if (state.panelPlacement !== "floating") return;
-				window.setTimeout(() => collapsePanelWithoutRender(), 50);
-			};
 			link.addEventListener("pointerdown", prepareOcNavigation);
-			link.addEventListener("touchend", collapseAfterNavigationTap);
 			link.addEventListener("click", () => {
 				prepareOcNavigation();
-				collapseAfterNavigationTap();
 			});
 		});
 		syncTargetFeedbackElement();
@@ -3985,6 +3693,7 @@
 	const syncPageActivation = () => {
 		const shouldBeActive = isOcCrimesPage();
 		if (state.active === shouldBeActive) {
+			if (shouldBeActive) render();
 			return;
 		}
 
@@ -4008,16 +3717,10 @@
 
 	const nodeTouchesOcDom = (node) => {
 		const element = node instanceof Element ? node : node?.parentElement;
-		if (!element) return false;
-		if (
-			state.displayMode === "in-page" &&
-			(element.id === IN_PAGE_WRAPPER_ID || element.querySelector?.(`#${IN_PAGE_WRAPPER_ID}`))
-		) {
-			return true;
-		}
-		if (isInsidePanel(element)) return false;
+		if (element?.id === PANEL_ID && !element.isConnected) return true;
+		if (!element || isInsidePanel(element)) return false;
 		const selector =
-			`a[href*='crimeId'], [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot'], [class*='crime'], [class*='Crime'], h1, h2, h3, h4, h5, h6, .${JOIN_CUE_BADGE_CLASS}`;
+			`${INLINE_SCOPE_SELECTOR}, ${OC_ROOT_SELECTOR}, #${PANEL_ID}, a[href*='crimeId'], [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot'], [class*='crime'], [class*='Crime'], h1, h2, h3, h4, h5, h6, .${JOIN_CUE_BADGE_CLASS}`;
 		return element.matches?.(selector) || !!element.querySelector?.(selector);
 	};
 
@@ -4027,15 +3730,8 @@
 			state.domSyncTimer = undefined;
 			syncPageActivation();
 			if (state.active) {
-				if (
-					state.displayMode === "in-page" &&
-					(state.inPageFallback || !document.getElementById(IN_PAGE_HOST_ID)?.isConnected)
-				) {
-					render();
-				} else {
-					syncRecommendationJoinCues();
-					syncCprEligibilityHighlights();
-				}
+				syncRecommendationJoinCues();
+				syncCprEligibilityHighlights();
 			}
 		}, delay);
 	};
@@ -4064,7 +3760,16 @@
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
-	window.addEventListener("resize", applyStoredPanelPosition);
+	// pushState/replaceState do not emit hashchange. Torn can use either during tab navigation.
+	for (const method of ["pushState", "replaceState"]) {
+		const original = window.history[method];
+		window.history[method] = function (...args) {
+			const result = original.apply(this, args);
+			// Let Torn finish its synchronous navigation before touching the DOM.
+			queuePageDomSync(0);
+			return result;
+		};
+	}
 
 	if (document.readyState === "loading") {
 		document.addEventListener("DOMContentLoaded", () => {
