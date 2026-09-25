@@ -46,6 +46,8 @@ CPR eligibility mode pauses complete-plan generation and scheduled optimizer ref
 
 Switching back to complete-plan mode starts a fresh backend generation immediately. Its generating, ready, stale, or failed state survives closing the admin page, and the userscript hides retained old assignments until the new plan has been saved.
 
+Version 0.2.66 matches numbered roles (for example, Muscle #1 and Muscle #2) independently, falling back to generic role CPR only when that exact position is absent. The update rebuilds previously cached personal recommendations from the saved backend snapshot while retaining the cached Torn profile. No new Torn API calls are added.
+
 ## Tests
 
 Run `pnpm install --frozen-lockfile`, `pnpm exec playwright install chromium`, then `pnpm test`. To use an installed Edge instead, set `PLAYWRIGHT_CHANNEL=msedge`. The browser tests run the installable userscript against local HTML fixtures with all requests mocked, including OC-only activation, SPA navigation, late/replaced content, keyboard/mobile layout, native role highlights, and request counts. They do not use a live Torn account or API key.

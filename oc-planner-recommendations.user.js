@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.65
+// @version      0.2.66
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.65";
+	const SCRIPT_VERSION = "0.2.66";
+	const PAYLOAD_CACHE_VERSION = 3;
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -1317,7 +1318,7 @@
 		try {
 			const cached = JSON.parse(String(storage.get(PAYLOAD_STORAGE_KEY, "") || ""));
 			if (
-				![1, 2].includes(Number(cached?.schemaVersion)) ||
+				Number(cached?.schemaVersion) !== PAYLOAD_CACHE_VERSION ||
 				cached?.keyCacheId !== keyCacheId ||
 				!cached?.payload?.memberId
 			) {
@@ -1336,7 +1337,7 @@
 			storage.set(
 				PAYLOAD_STORAGE_KEY,
 				JSON.stringify({
-					schemaVersion: 2,
+					schemaVersion: PAYLOAD_CACHE_VERSION,
 					keyCacheId: getKeyCacheId(key),
 					memberId: payload.memberId,
 					factionId,
@@ -2647,16 +2648,26 @@
 		);
 		const crimes = member?.crimes || {};
 		const crimeName = crime?.name || slot?.crimeName || slot?.recommended?.cprCrimeName || "";
-		const roleName = slot?.role || slot?.recommended?.cprRoleName || slot?.position || "";
 		const crimeEntry = Object.entries(crimes).find(
 			([name]) => normalizeText(name) === normalizeText(crimeName)
 		);
 		if (!crimeEntry || !crimeEntry[1] || typeof crimeEntry[1] !== "object") return 0;
-		const roleEntry = Object.entries(crimeEntry[1]).find(
-			([name]) => normalizeText(name) === normalizeText(roleName)
-		);
-		const cpr = Number(roleEntry?.[1] || 0);
-		return Number.isFinite(cpr) ? cpr : 0;
+		const normalizeRole = (name) => normalizeText(name).replace(/\s*#\s*(\d+)$/, " #$1");
+		const roleNames = [slot?.position, slot?.role, slot?.recommended?.cprRoleName]
+			.map(normalizeRole).filter(Boolean);
+		// Exact numbered positions take precedence over legacy generic role CPR.
+		// Never strip the stored role index: Muscle #1 must not supply Muscle #2's CPR.
+		const candidates = new Set([
+			...roleNames,
+			...roleNames.map((name) => name.replace(/\s*#\d+$/, "")),
+		]);
+		const roles = new Map(Object.entries(crimeEntry[1]).map(([name, value]) => [normalizeRole(name), value]));
+		for (const name of candidates) {
+			if (!roles.has(name)) continue;
+			const cpr = Number(roles.get(name));
+			return Number.isFinite(cpr) ? cpr : 0;
+		}
+		return 0;
 	};
 
 	const memberFitsSlotBand = (cpr, slot, crime, cprRequirements) => {

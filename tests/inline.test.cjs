@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, plannerSnapshot = null, cacheSchemaVersion = 3 } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -28,7 +28,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
   // Every browser request is intercepted. No live Torn/backend traffic or real keys.
   await context.route('**/*', request => request.fulfill({ contentType: 'text/html', body: html }));
   await page.goto(url);
-  await page.evaluate(({ saved, cpr, deferProfile }) => {
+  await page.evaluate(({ saved, cpr, deferProfile, plannerSnapshot, cacheSchemaVersion }) => {
     const key = 'test-only';
     const profile = { player_id: 123, name: 'Test member', faction: { faction_id: 41309 } };
     const payload = {
@@ -42,7 +42,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     if (saved) {
       cache.set('askeladds_oc_planner_api_key', key);
       cache.set('askeladds_oc_planner_profile', JSON.stringify({ keyCacheId: '9:test:only', profile, savedAt: new Date().toISOString() }));
-      cache.set('askeladds_oc_planner_member_payload', JSON.stringify({ schemaVersion: 2, keyCacheId: '9:test:only', memberId: 123, factionId: '41309', checkedAt: Date.now() / 1000, snapshotRevision: 'fixture', payload }));
+      cache.set('askeladds_oc_planner_member_payload', JSON.stringify({ schemaVersion: cacheSchemaVersion, keyCacheId: '9:test:only', memberId: 123, factionId: '41309', checkedAt: Date.now() / 1000, snapshotRevision: 'fixture', payload }));
       cache.set('askeladds_oc_planner_position', JSON.stringify({ left: 1800, top: 1500 }));
     }
     window.GM_getValue = (key, fallback) => cache.has(key) ? cache.get(key) : fallback;
@@ -51,16 +51,25 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     window.testMenu = {};
     window.GM_registerMenuCommand = (name, fn) => { window.testMenu[name] = fn; };
     window.testCalls = [];
+    window.testPlannerRevisions = [];
+    window.testReadMemberPayload = () => JSON.parse(cache.get('askeladds_oc_planner_member_payload') || 'null');
     window.GM_xmlhttpRequest = options => {
-      window.testCalls.push(new URL(options.url).pathname);
-      const payload = options.url.includes('api.torn.com') ? profile : { notModified: saved, recommendationPolicy: { mode: cpr ? 'cpr' : 'plan' } };
+      const url = new URL(options.url);
+      window.testCalls.push(url.pathname);
+      if (url.pathname.endsWith('/bot-alerts')) window.testPlannerRevisions.push(url.searchParams.get('revision'));
+      const payload = options.url.includes('api.torn.com') ? profile
+        : plannerSnapshot && url.pathname.endsWith('/bot-alerts')
+          ? url.searchParams.get('revision') === plannerSnapshot.revision
+            ? { notModified: true, revision: plannerSnapshot.revision, recommendationPolicy: plannerSnapshot.recommendationPolicy }
+            : plannerSnapshot
+          : { notModified: saved, recommendationPolicy: { mode: cpr ? 'cpr' : 'plan' } };
       const respond = () => options.onload({ status: 200, responseHeaders: 'content-type: application/json', responseText: JSON.stringify(payload) });
       if (deferProfile && options.url.includes('api.torn.com')) window.testResolveProfile = respond;
       else queueMicrotask(respond);
     };
     window.nativeJoins = 0;
     document.querySelector('.native-join')?.addEventListener('click', () => { window.nativeJoins++; });
-  }, { saved, cpr, deferProfile });
+  }, { saved, cpr, deferProfile, plannerSnapshot, cacheSchemaVersion });
   await page.addScriptTag({ content: source });
   return page;
 }
@@ -227,3 +236,61 @@ test('leaving during key validation does not continue fetching the planner or sc
   await page.waitForFunction(() => testCalls.some(path => path.endsWith('/bot-alerts')));
   assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), 1, 'returning reuses the validated profile and resumes the cancelled planner read');
 });
+
+// Native order differs from the planner order, as on Torn's Window of Opportunity card.
+const numberedPositions = ['Engineer', 'Looter #1', 'Looter #2', 'Muscle #1', 'Muscle #2'];
+const numberedCrime = `<article data-crime-id="2229602"><h3>Window of Opportunity</h3>${numberedPositions.map(position => `
+  <div class="slot-wrapper" data-position="${position}"><div class="slotHeader"><span class="title">${position.toUpperCase()}</span></div>
+  <button class="native-join" disabled>Join</button></div>`).join('')}</article>`;
+const numberedSnapshot = {
+  revision: 'numbered-fixture',
+  recommendationPolicy: { mode: 'cpr', cprRequirements: {} },
+  planner: {
+    id: 'numbered-run', generatedAt: '2026-09-25T20:23:27.121Z',
+    members: [{ memberId: 123, memberName: 'Test member', crimes: {
+      'Window of Opportunity': { Engineer: 84, 'Looter #1': 85, 'Looter #2': 85, 'Muscle #1': 86, 'Muscle #2': 86 },
+    } }],
+    crimes: [{ id: 2229602, name: 'Window of Opportunity', difficulty: 7, status: 'Recruiting', openSlots: 5,
+      slots: ['Engineer', 'Looter #1', 'Muscle #1', 'Looter #2', 'Muscle #2'].map(position => ({
+        position, role: position.replace(/ #\d+$/, ''),
+        minimumRecommendedCpr: ['Muscle #1', 'Looter #2'].includes(position) ? 75 : 65,
+        maximumRecommendedCpr: ['Muscle #1', 'Looter #2'].includes(position) ? 100 : 80,
+      })),
+    }],
+  },
+};
+
+async function assertNumberedHighlights(page) {
+  await page.waitForFunction(() => window.testReadMemberPayload()?.payload?.plannerRunId === 'numbered-run');
+  await page.locator('.askeladds-oc-planner-role-cpr-eligible').first().waitFor();
+  assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
+    elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
+  const cached = await page.evaluate(() => testReadMemberPayload());
+  assert.equal(cached.schemaVersion, 3);
+  assert.equal(cached.payload.cprEligibleSlots.length, 2);
+  assert.equal(cached.payload.cprIneligibleCount, 3);
+  assert.equal(cached.payload.cprMissingCount, 0);
+  assert.equal(cached.payload.cprOpenSlotCount, 5);
+  assert.equal(await page.evaluate(() => nativeJoins), 0);
+}
+
+test('fresh snapshot highlights only qualifying numbered roles, even with disabled native Join buttons', async t => {
+  const page = await open(t, { html: fixture.replace(crime, numberedCrime), cpr: true, plannerSnapshot: numberedSnapshot });
+  await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+  await page.locator(`${panel} .ocp-save-refresh`).click();
+  await assertNumberedHighlights(page);
+  assert.deepEqual(await page.evaluate(() => testCalls), ['/user/', '/api/v1/factions/41309/oc-planner/bot-alerts', '/api/v1/factions/41309/oc-planner/script-access']);
+  await page.screenshot({ path: join(__dirname, '../test-results/numbered-cpr.png'), fullPage: true });
+});
+
+for (const cacheSchemaVersion of [1, 2]) {
+  test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
+    const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
+    await assertNumberedHighlights(page);
+    assert.deepEqual(await page.evaluate(() => testPlannerRevisions), [null], 'must fetch the saved snapshot, not accept an unchanged response for old derived data');
+    assert.deepEqual(await page.evaluate(() => testCalls), ['/api/v1/factions/41309/oc-planner/bot-alerts', '/api/v1/factions/41309/oc-planner/script-access']);
+    await page.locator(`${panel} .ocp-collapse`).click();
+    await assertNumberedHighlights(page);
+    assert.equal(await page.evaluate(() => testCalls.length), 2, 'expanding still makes no requests');
+  });
+}
