@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.66
+// @version      0.2.67
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.66";
+	const SCRIPT_VERSION = "0.2.67";
 	const PAYLOAD_CACHE_VERSION = 3;
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
@@ -2609,16 +2609,17 @@
 		);
 
 	const getSlotCprBand = (slot, crime, cprRequirements = {}) => {
-		const fallbackMin = Number(slot?.minimumRecommendedCpr || 0);
-		const fallbackMax = Number(slot?.maximumRecommendedCpr || 100);
-		const impact = ["high", "medium", "low", "unknown"].includes(slot?.roleImpactLabel)
+		const fallbackMin = Number(slot?.minimumRecommendedCpr ?? 0);
+		const fallbackMax = Number(slot?.maximumRecommendedCpr ?? 100);
+		const impact = ["high", "medium", "low", "useless", "unknown"].includes(slot?.roleImpactLabel)
 			? slot.roleImpactLabel
 			: "unknown";
 		const numericDifficulty = Number(crime?.difficulty || 0);
 		const difficulty = Number.isFinite(numericDifficulty) && numericDifficulty > 0
 			? String(Math.max(1, Math.min(10, Math.round(numericDifficulty))))
 			: "";
-		const configured = difficulty ? cprRequirements?.[impact]?.[difficulty] : null;
+		const configured = difficulty ? (cprRequirements?.[impact]?.[difficulty]
+			?? (impact === "useless" ? cprRequirements?.low?.[difficulty] : undefined)) : null;
 		const configuredMin = Number(configured?.min);
 		const configuredMax = Number(configured?.max);
 		const min = Number.isFinite(configuredMin)
@@ -2626,7 +2627,7 @@
 			: Number.isFinite(fallbackMin) ? fallbackMin : 0;
 		const max = Number.isFinite(configuredMax)
 			? configuredMax
-			: Number.isFinite(fallbackMax) && fallbackMax > 0 ? fallbackMax : 100;
+			: Number.isFinite(fallbackMax) ? fallbackMax : 100;
 		const normalizedMin = Math.max(0, Math.min(100, min));
 		const normalizedMax = Math.max(0, Math.min(100, max));
 		return {
