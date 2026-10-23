@@ -51,11 +51,13 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     window.testMenu = {};
     window.GM_registerMenuCommand = (name, fn) => { window.testMenu[name] = fn; };
     window.testCalls = [];
+    window.testRequests = [];
     window.testPlannerRevisions = [];
     window.testReadMemberPayload = () => JSON.parse(cache.get('askeladds_oc_planner_member_payload') || 'null');
     window.GM_xmlhttpRequest = options => {
       const url = new URL(options.url);
       window.testCalls.push(url.pathname);
+      window.testRequests.push({ path: url.pathname, method: options.method || 'GET', data: options.data || '' });
       if (url.pathname.endsWith('/bot-alerts')) window.testPlannerRevisions.push(url.searchParams.get('revision'));
       const payload = options.url.includes('api.torn.com') ? profile
         : plannerSnapshot && url.pathname.endsWith('/bot-alerts')
@@ -292,5 +294,29 @@ for (const cacheSchemaVersion of [1, 2]) {
     await page.locator(`${panel} .ocp-collapse`).click();
     await assertNumberedHighlights(page);
     assert.equal(await page.evaluate(() => testCalls.length), 2, 'expanding still makes no requests');
+  });
+}
+
+for (const status of ['ready', 'missing', 'refreshing']) {
+  test(`CPR mode records installed version and last use with a ${status} snapshot, independently of a complete plan`, async t => {
+    const snapshot = status === 'ready' ? numberedSnapshot : {
+      revision: 'cpr-' + status,
+      planner: null,
+      recommendationPolicy: { mode: 'cpr', cprSnapshotStatus: status === 'refreshing' ? 'refreshing' : 'waiting', snapshotSource: 'missing' },
+    };
+    const page = await open(t, { cpr: true, plannerSnapshot: snapshot });
+    await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+    await page.locator(`${panel} .ocp-save-refresh`).click();
+    await page.waitForFunction(() => testCalls.some(path => path.endsWith('/script-access')));
+    const requests = await page.evaluate(() => testRequests);
+    const checkIns = requests.filter(request => request.path.endsWith('/script-access'));
+    assert.equal(checkIns.length, 1);
+    const payload = JSON.parse(checkIns[0].data);
+    assert.equal(payload.playerId, 123);
+    assert.equal(String(payload.factionId), '41309');
+    assert.equal(payload.scriptVersion, source.match(/@version\s+(\S+)/)[1]);
+    assert.equal(payload.key, undefined, 'no Torn API key is sent to check-ins');
+    assert.equal(requests.filter(request => request.path === '/user/').length, 1, 'no extra Torn calls for check-in');
+    assert.equal(await page.evaluate(() => nativeJoins), 0);
   });
 }
