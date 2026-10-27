@@ -45,6 +45,21 @@ test('normalizes case and whitespace, including the role index', () => {
   assert.equal(lookup({ '  mUsClE  # 2  ': 81 }), 81);
 });
 
+test('numbered role aliases with and without # retain exact precedence and never borrow siblings', () => {
+  const variants = ['Hustler #2', 'Hustler # 2', 'Hustler 2', 'Hustler2'];
+  for (const position of variants) {
+    for (const stored of variants) {
+      assert.equal(lookup({ Hustler: 99, 'Hustler 1': 92, [stored]: 65 }, position, position), 65);
+      for (const value of [0, null, '', 'unknown', Infinity]) {
+        assert.equal(lookup({ Hustler: 99, [stored]: value }, position, position), 0);
+      }
+    }
+    assert.equal(lookup({ Hustler: 61 }, position, position), 61);
+    assert.equal(lookup({ 'Hustler 1': 62 }, position, position), 0);
+    assert.equal(lookup({ Hustler1: 62 }, position, position), 0);
+  }
+});
+
 test('does not replace an explicit zero or invalid exact CPR with generic CPR', () => {
   for (const value of [0, null, '', 'unknown', Infinity]) {
     assert.equal(lookup({ Muscle: 99, 'Muscle #2': value }), 0);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.67
+// @version      0.2.68
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.67";
-	const PAYLOAD_CACHE_VERSION = 3;
+	const SCRIPT_VERSION = "0.2.68";
+	const PAYLOAD_CACHE_VERSION = 4;
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -2653,7 +2653,7 @@
 			([name]) => normalizeText(name) === normalizeText(crimeName)
 		);
 		if (!crimeEntry || !crimeEntry[1] || typeof crimeEntry[1] !== "object") return 0;
-		const normalizeRole = (name) => normalizeText(name).replace(/\s*#\s*(\d+)$/, " #$1");
+		const normalizeRole = (name) => normalizeText(name).replace(/\s*#?\s*(\d+)$/, " #$1");
 		const roleNames = [slot?.position, slot?.role, slot?.recommended?.cprRoleName]
 			.map(normalizeRole).filter(Boolean);
 		// Exact numbered positions take precedence over legacy generic role CPR.
