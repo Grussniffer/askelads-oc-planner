@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, plannerSnapshot = null, cacheSchemaVersion = 4 } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, plannerSnapshot = null, cacheSchemaVersion = 5 } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -268,7 +268,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 4);
+  assert.equal(cached.schemaVersion, 5);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -285,7 +285,26 @@ test('fresh snapshot highlights only qualifying numbered roles, even with disabl
   await page.screenshot({ path: join(__dirname, '../test-results/numbered-cpr.png'), fullPage: true });
 });
 
-for (const cacheSchemaVersion of [1, 2, 3]) {
+test('CPR guidance matches Guardian Angels source aliases to the real Torn crime', async t => {
+  const snapshot = {
+    revision:'guardian-fixture',recommendationPolicy:{mode:'cpr',cprRequirements:{}},
+    planner:{id:'guardian-run',generatedAt:'2026-10-28T12:00:00.000Z',
+      members:[{memberId:123,memberName:'Test member',crimes:{'Guardian Angels':{Driver:67}}}],
+      crimes:[{id:101,name:'Guardian Ángels',difficulty:5,status:'Recruiting',openSlots:1,
+        slots:[{position:'Driver',role:'Driver',minimumRecommendedCpr:55,maximumRecommendedCpr:77}]}]},
+  };
+  const page = await open(t,{cpr:true,html:fixture.replace('Test OC','Guardian Ángels'),plannerSnapshot:snapshot});
+  await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+  await page.locator(`${panel} .ocp-save-refresh`).click();
+  await page.locator('.askeladds-oc-planner-role-cpr-eligible').first().waitFor();
+  const cached = await page.evaluate(()=>testReadMemberPayload());
+  assert.equal(cached.payload.cprEligibleSlots.length,1);
+  assert.equal(cached.payload.cprEligibleSlots[0].crimeName,'Guardian Ángels');
+  assert.equal(cached.payload.cprMissingCount,0);
+  assert.equal(await page.evaluate(()=>nativeJoins),0);
+});
+
+for (const cacheSchemaVersion of [1, 2, 3, 4]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);

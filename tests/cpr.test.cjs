@@ -11,6 +11,7 @@ const end = source.indexOf('\tconst memberFitsSlotBand =', start);
 assert.ok(start >= 0 && end > start);
 const getCpr = runInNewContext(`
   const normalizeText = ${source.match(/const normalizeText = ([\s\S]*?);/)[1]};
+  const normalizeCrimeName = ${source.match(/const normalizeCrimeName = ([\s\S]*?);/)[1]};
   ${source.slice(start, end)}
   getMemberCprForSlot;
 `);
@@ -71,4 +72,43 @@ test('does not read another member or crime and tolerates missing data', () => {
   assert.equal(getCpr({ members: [{ memberId: 999, crimes: { [crime.name]: { Muscle: 90 } } }] }, 123, crime, { role: 'Muscle' }), 0);
   assert.equal(getCpr({ members: [{ memberId: 123, crimes: { Other: { Muscle: 90 } } }] }, 123, crime, { role: 'Muscle' }), 0);
   assert.equal(getCpr({}, 123, crime, { role: 'Muscle' }), 0);
+});
+
+test('Guardian Angels source aliases share CPR across accents, composition, case and whitespace', () => {
+  const names = ['Guardian Angels', 'Guardian Ángels', 'Guardian A\u0301ngels', '  GUARDIAN  ÁNGELS  '];
+  for (const stored of names) for (const requested of names) {
+    const planner = {members:[{memberId:123,crimes:{[stored]:{Enforcer:67}}}]};
+    assert.equal(getCpr(planner,123,{name:requested},{position:'Enforcer',role:'Enforcer'}),67);
+  }
+});
+
+test('exact crime-name CPR wins over aliases and unrelated punctuation remains distinct', () => {
+  const planner = {members:[{memberId:123,crimes:{
+    'Guardian Angels':{Enforcer:60},
+    'Guardian Ángels':{Enforcer:77},
+    'Guardian-Angels':{Enforcer:91},
+  }}]};
+  assert.equal(getCpr(planner,123,{name:'Guardian Angels'},{position:'Enforcer',role:'Enforcer'}),60);
+  assert.equal(getCpr(planner,123,{name:'Guardian Ángels'},{position:'Enforcer',role:'Enforcer'}),77);
+  assert.equal(getCpr(planner,123,{name:' GUARDIAN A\u0301NGELS '},{position:'Enforcer',role:'Enforcer'}),77);
+  assert.equal(getCpr(planner,123,{name:'Guardian-Angels'},{position:'Enforcer',role:'Enforcer'}),91);
+  assert.equal(getCpr(planner,123,{name:'GuardianAngels'},{position:'Enforcer',role:'Enforcer'}),0);
+  assert.equal(getCpr(planner,123,{name:'Guardian Angels!'},{position:'Enforcer',role:'Enforcer'}),0);
+});
+
+test('crime aliases keep numbered role isolation and explicit invalid CPR', () => {
+  const planner = {members:[{memberId:123,crimes:{'Guardian Ángels':{Muscle:95,'Muscle #1':62,'Muscle #2':null}}}]};
+  assert.equal(getCpr(planner,123,{name:'Guardian Angels'},{position:'Muscle 1',role:'Muscle'}),62);
+  assert.equal(getCpr(planner,123,{name:'Guardian Angels'},{position:'Muscle 2',role:'Muscle'}),0);
+});
+
+test('partial crime aliases can supply absent roles but never replace explicit zero or invalid roles', () => {
+  const lookupCrime = (crimes, name, role) => getCpr({members:[{memberId:123,crimes}]},123,{name},{position:role,role});
+  const partial = {'Guardian Angels':{Enforcer:65}, 'Guardian Ángels':{Hustler:70}};
+  assert.equal(lookupCrime(partial,'Guardian Angels','Hustler'),70);
+  assert.equal(lookupCrime(partial,'Guardian Ángels','Enforcer'),65);
+  for (const value of [0,null,'',undefined,'unknown',Infinity]) {
+    assert.equal(lookupCrime({'Guardian Angels':{Enforcer:value}, 'Guardian Ángels':{Enforcer:77}},'Guardian Angels','Enforcer'),0);
+    assert.equal(lookupCrime({'Guardian Angels':{Enforcer:77}, 'Guardian Ángels':{Enforcer:value}},'Guardian Ángels','Enforcer'),0);
+  }
 });

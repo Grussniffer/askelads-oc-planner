@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.68
+// @version      0.2.69
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.68";
-	const PAYLOAD_CACHE_VERSION = 4;
+	const SCRIPT_VERSION = "0.2.69";
+	const PAYLOAD_CACHE_VERSION = 5;
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -1530,6 +1530,10 @@
 			.toLowerCase()
 			.replace(/\s+/g, " ")
 			.trim();
+	// Source display names may differ in accents or Unicode composition, not identity.
+	// Keep punctuation intact so genuinely different OC names do not collide.
+	const normalizeCrimeName = (value) =>
+		normalizeText(String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
 	const ROLE_TITLE_SELECTOR =
 		"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']";
 	const CRIME_ID_SELECTOR =
@@ -2034,7 +2038,7 @@
 	};
 
 	const findCrimeTitleElement = (crimeElement, crimeName) => {
-		const target = normalizeText(crimeName);
+		const target = normalizeCrimeName(crimeName);
 		if (!crimeElement || !target) return null;
 		return (
 			Array.from(
@@ -2046,7 +2050,7 @@
 					(element) =>
 						!isInsidePanel(element) &&
 						!element.classList.contains(JOIN_CUE_BADGE_CLASS) &&
-						normalizeText(element.textContent) === target
+						normalizeCrimeName(element.textContent) === target
 				)
 				.sort((a, b) => a.children.length - b.children.length)[0] ||
 			null
@@ -2649,10 +2653,14 @@
 		);
 		const crimes = member?.crimes || {};
 		const crimeName = crime?.name || slot?.crimeName || slot?.recommended?.cprCrimeName || "";
-		const crimeEntry = Object.entries(crimes).find(
-			([name]) => normalizeText(name) === normalizeText(crimeName)
-		);
-		if (!crimeEntry || !crimeEntry[1] || typeof crimeEntry[1] !== "object") return 0;
+		// An exact stored source entry wins. A partial entry may fall through only
+		// when its role is absent, never when that role has explicit invalid/zero CPR.
+		const crimeEntries = Object.entries(crimes)
+			.filter(([name]) => normalizeCrimeName(name) === normalizeCrimeName(crimeName))
+			.sort(([left], [right]) => {
+				const priority = (name) => name === crimeName ? 0 : normalizeText(name.normalize("NFC")) === normalizeText(crimeName.normalize("NFC")) ? 1 : 2;
+				return priority(left) - priority(right);
+			});
 		const normalizeRole = (name) => normalizeText(name).replace(/\s*#?\s*(\d+)$/, " #$1");
 		const roleNames = [slot?.position, slot?.role, slot?.recommended?.cprRoleName]
 			.map(normalizeRole).filter(Boolean);
@@ -2662,11 +2670,14 @@
 			...roleNames,
 			...roleNames.map((name) => name.replace(/\s*#\d+$/, "")),
 		]);
-		const roles = new Map(Object.entries(crimeEntry[1]).map(([name, value]) => [normalizeRole(name), value]));
-		for (const name of candidates) {
-			if (!roles.has(name)) continue;
-			const cpr = Number(roles.get(name));
-			return Number.isFinite(cpr) ? cpr : 0;
+		for (const [, crimeRoles] of crimeEntries) {
+			if (!crimeRoles || typeof crimeRoles !== "object") continue;
+			const roles = new Map(Object.entries(crimeRoles).map(([name, value]) => [normalizeRole(name), value]));
+			for (const name of candidates) {
+				if (!roles.has(name)) continue;
+				const cpr = Number(roles.get(name));
+				return Number.isFinite(cpr) ? cpr : 0;
+			}
 		}
 		return 0;
 	};
