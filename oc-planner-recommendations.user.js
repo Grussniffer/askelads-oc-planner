@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.69
+// @version      0.2.70
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.69";
-	const PAYLOAD_CACHE_VERSION = 5;
+	const SCRIPT_VERSION = "0.2.70";
+	const PAYLOAD_CACHE_VERSION = 6;
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -99,6 +99,7 @@
 		latestScriptVersion: "",
 		scriptInstallUrl: "",
 		usingCachedPayload: false,
+		requestVersion: 0,
 		loading: false,
 		error: "",
 		progress: "",
@@ -913,6 +914,8 @@
 	registerMenuCommand("OC Planner: refresh", () => refreshRecommendations(true));
 	registerMenuCommand("OC Planner: forget API key", () => {
 		stopHighlightLock();
+		state.requestVersion += 1;
+		state.loading = false;
 		storage.remove(STORAGE_KEY);
 		storage.remove(PROFILE_STORAGE_KEY);
 		storage.remove(PAYLOAD_STORAGE_KEY);
@@ -1534,6 +1537,13 @@
 	// Keep punctuation intact so genuinely different OC names do not collide.
 	const normalizeCrimeName = (value) =>
 		normalizeText(String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+	const normalizeRoleName = (value) => normalizeText(value).replace(/\s*#?\s*(\d+)$/, " #$1");
+	const getCprNumber = (value) => {
+		if (value === null || value === undefined || typeof value === "boolean" ||
+			(typeof value === "string" && !value.trim()) || !["number", "string"].includes(typeof value)) return undefined;
+		const cpr = Number(value);
+		return Number.isFinite(cpr) && cpr >= 0 && cpr <= 100 ? cpr : undefined;
+	};
 	const ROLE_TITLE_SELECTOR =
 		"[class*='slotHeader'] [class*='title'], [class*='slotHeader'], [class*='SlotHeader'] [class*='title'], [class*='SlotHeader'], [class*='slot'] [class*='title'], [class*='Slot'] [class*='title']";
 	const CRIME_ID_SELECTOR =
@@ -1544,14 +1554,14 @@
 			recommendation?.position,
 			recommendation?.role,
 		]
-			.map(normalizeText)
+			.map(normalizeRoleName)
 			.filter(Boolean);
 
 	const getPositionRoleHint = (recommendation) => {
-		const position = normalizeText(recommendation?.position);
+		const position = normalizeRoleName(recommendation?.position);
 		const match = position.match(/^(.+?)\s*#\s*(\d+)$/);
 		if (!match) return null;
-		const role = normalizeText(match[1]);
+		const role = normalizeRoleName(match[1]);
 		const ordinal = Number(match[2]);
 		return role && Number.isInteger(ordinal) && ordinal > 0 ? { role, ordinal } : null;
 	};
@@ -1562,7 +1572,7 @@
 		null;
 
 	const getRoleTitleText = (element) =>
-		normalizeText(element?.querySelector?.("[class*='title']")?.textContent || element?.textContent);
+			normalizeRoleName(element?.querySelector?.("[class*='title']")?.textContent || element?.textContent);
 
 	const findExactRoleTitleElement = (scope, recommendation) => {
 		const roleTerms = getRoleTerms(recommendation);
@@ -1585,12 +1595,12 @@
 
 		const positionHint = getPositionRoleHint(recommendation);
 		if (positionHint) {
-			const exactPosition = normalizeText(recommendation?.position);
+			const exactPosition = normalizeRoleName(recommendation?.position);
 			const exactPositionMatch = entries.find((entry) => entry.text === exactPosition);
 			if (exactPositionMatch) return exactPositionMatch.wrapper;
-			const ordinalMatches = entries.filter(
-				(entry) => entry.text === positionHint.role || entry.text.startsWith(`${positionHint.role} `)
-			);
+			// Only genuinely unnumbered native titles may use ordinal fallback. A
+			// missing #2 must never highlight #1 simply because it appears second.
+			const ordinalMatches = entries.filter((entry) => entry.text === positionHint.role);
 			return ordinalMatches[positionHint.ordinal - 1]?.wrapper || null;
 		}
 
@@ -2160,6 +2170,16 @@
 		panelMounted: !!document.getElementById(PANEL_ID)?.isConnected,
 		currentPageCrimeId: getCurrentPageCrimeId() || null,
 		recommendationCount: Number(state.lastPayload?.recommendations?.length || 0),
+		cprEligibility: state.lastPayload?.recommendationMode === "cpr" ? {
+			memberStatus: state.lastPayload.cprMemberStatus || null,
+			openRoles: Number(state.lastPayload.cprOpenSlotCount || 0),
+			eligibleRoles: Number(state.lastPayload.cprEligibleSlots?.length || 0),
+			outsideLimits: Number(state.lastPayload.cprIneligibleCount || 0),
+			missingCpr: Number(state.lastPayload.cprMissingCount || 0),
+			missingLimits: Number(state.lastPayload.cprMissingLimitsCount || 0),
+			snapshotSource: state.lastPayload.snapshotSource || null,
+			snapshotGeneratedAt: state.lastPayload.cprSnapshotGeneratedAt || state.lastPayload.snapshotGeneratedAt || null,
+		} : null,
 		noPlanReason: state.lastPayload?.noPlanReason || null,
 		error: state.error || null,
 	}, null, 2);
@@ -2613,35 +2633,28 @@
 		);
 
 	const getSlotCprBand = (slot, crime, cprRequirements = {}) => {
-		const fallbackMin = Number(slot?.minimumRecommendedCpr ?? 0);
-		const fallbackMax = Number(slot?.maximumRecommendedCpr ?? 100);
+		const fallbackMin = getCprNumber(slot?.minimumRecommendedCpr);
+		const fallbackMax = getCprNumber(slot?.maximumRecommendedCpr);
 		const impact = ["high", "medium", "low", "useless", "unknown"].includes(slot?.roleImpactLabel)
 			? slot.roleImpactLabel
 			: "unknown";
-		const numericDifficulty = Number(crime?.difficulty || 0);
-		const difficulty = Number.isFinite(numericDifficulty) && numericDifficulty > 0
-			? String(Math.max(1, Math.min(10, Math.round(numericDifficulty))))
+		const numericDifficulty = Number(crime?.difficulty);
+		const difficulty = Number.isInteger(numericDifficulty) && numericDifficulty >= 1 && numericDifficulty <= 10
+			? String(numericDifficulty)
 			: "";
 		const configured = difficulty ? (cprRequirements?.[impact]?.[difficulty]
 			?? (impact === "useless" ? cprRequirements?.low?.[difficulty] : undefined)) : null;
-		const configuredMin = Number(configured?.min);
-		const configuredMax = Number(configured?.max);
-		const min = Number.isFinite(configuredMin)
-			? configuredMin
-			: Number.isFinite(fallbackMin) ? fallbackMin : 0;
-		const max = Number.isFinite(configuredMax)
-			? configuredMax
-			: Number.isFinite(fallbackMax) ? fallbackMax : 100;
-		const normalizedMin = Math.max(0, Math.min(100, min));
-		const normalizedMax = Math.max(0, Math.min(100, max));
-		return {
-			min: normalizedMin,
-			max: Math.max(normalizedMin, normalizedMax),
-		};
+		const min = getCprNumber(configured?.min);
+		const max = getCprNumber(configured?.max);
+		if (min !== undefined && max !== undefined && min <= max) return { min, max };
+		return fallbackMin !== undefined && fallbackMax !== undefined && fallbackMin <= fallbackMax
+			? { min: fallbackMin, max: fallbackMax } : undefined;
 	};
 
 	const formatCprBand = (slot, crime, cprRequirements) => {
-		const { min, max } = getSlotCprBand(slot, crime, cprRequirements);
+		const band = getSlotCprBand(slot, crime, cprRequirements);
+		if (!band) return "CPR limits unavailable";
+		const { min, max } = band;
 		return max < 100 ? `${Math.round(min)}-${Math.round(max)}% CPR` : `${Math.round(min)}%+ CPR`;
 	};
 
@@ -2661,30 +2674,41 @@
 				const priority = (name) => name === crimeName ? 0 : normalizeText(name.normalize("NFC")) === normalizeText(crimeName.normalize("NFC")) ? 1 : 2;
 				return priority(left) - priority(right);
 			});
-		const normalizeRole = (name) => normalizeText(name).replace(/\s*#?\s*(\d+)$/, " #$1");
-		const roleNames = [slot?.position, slot?.role, slot?.recommended?.cprRoleName]
-			.map(normalizeRole).filter(Boolean);
-		// Exact numbered positions take precedence over legacy generic role CPR.
-		// Never strip the stored role index: Muscle #1 must not supply Muscle #2's CPR.
-		const candidates = new Set([
-			...roleNames,
-			...roleNames.map((name) => name.replace(/\s*#\d+$/, "")),
-		]);
+		const rawPosition = String(slot?.position || "");
+		const meaningful = (value) => {
+			const base = normalizeRoleName(value).replace(/\s*#\d+$/, "");
+			return base !== "" && base !== "unknown" && /\p{L}/u.test(base);
+		};
+		// A real numbered position defines this slot. Stale metadata for a different
+		// role must never substitute its CPR; use mapped role only without a position.
+		const position = meaningful(rawPosition) ? rawPosition : String(slot?.role || "");
+		if (!meaningful(position)) return undefined;
+		const rawBaseRole = position.replace(/\s*#?\s*\d+\s*$/, "").trim();
+		const baseRole = normalizeRoleName(position).replace(/\s*#\d+$/, "");
 		for (const [, crimeRoles] of crimeEntries) {
 			if (!crimeRoles || typeof crimeRoles !== "object") continue;
-			const roles = new Map(Object.entries(crimeRoles).map(([name, value]) => [normalizeRole(name), value]));
-			for (const name of candidates) {
-				if (!roles.has(name)) continue;
-				const cpr = Number(roles.get(name));
-				return Number.isFinite(cpr) ? cpr : 0;
-			}
+			const entries = Object.entries(crimeRoles);
+			const exact = entries.find(([name]) => name === position)
+				|| entries.find(([name]) => normalizeText(name) === normalizeText(position))
+				|| entries.find(([name]) => normalizeRoleName(name) === normalizeRoleName(position));
+			if (exact) return getCprNumber(exact[1]);
 		}
-		return 0;
+		// Search every spelling of the same OC for the specific position before
+		// permitting legacy generic CPR. A generic entry cannot hide an exact #2.
+		for (const [, crimeRoles] of crimeEntries) {
+			if (!crimeRoles || typeof crimeRoles !== "object") continue;
+			const entries = Object.entries(crimeRoles).filter(([name]) => !/#\d+$/.test(normalizeRoleName(name)));
+			const generic = entries.find(([name]) => name === rawBaseRole)
+				|| entries.find(([name]) => normalizeText(name) === normalizeText(rawBaseRole))
+				|| entries.find(([name]) => normalizeRoleName(name) === baseRole);
+			if (generic) return getCprNumber(generic[1]);
+		}
+		return undefined;
 	};
 
 	const memberFitsSlotBand = (cpr, slot, crime, cprRequirements) => {
-		const { min, max } = getSlotCprBand(slot, crime, cprRequirements);
-		return cpr > 0 && cpr >= min && cpr <= max;
+		const band = getSlotCprBand(slot, crime, cprRequirements);
+		return getCprNumber(cpr) !== undefined && !!band && cpr >= band.min && cpr <= band.max;
 	};
 
 	const findFlexibleSlots = (planner, memberId, cprRequirements) => {
@@ -2720,6 +2744,7 @@
 		const eligibleSlots = [];
 		let ineligibleCount = 0;
 		let missingCprCount = 0;
+		let missingLimitsCount = 0;
 		let openSlotCount = 0;
 
 		for (const crime of planner?.crimes || []) {
@@ -2730,8 +2755,12 @@
 				if (slot.currentUserId || slot.currentUserName) continue;
 				openSlotCount += 1;
 				const cpr = getMemberCprForSlot(planner, memberId, crime, slot);
-				if (!(cpr > 0)) {
+				if (cpr === undefined) {
 					missingCprCount += 1;
+					continue;
+				}
+				if (!getSlotCprBand(slot, crime, cprRequirements)) {
+					missingLimitsCount += 1;
 					continue;
 				}
 				if (!memberFitsSlotBand(cpr, slot, crime, cprRequirements)) {
@@ -2758,7 +2787,7 @@
 				String(a.crimeName || "").localeCompare(String(b.crimeName || "")) ||
 				String(a.position || "").localeCompare(String(b.position || ""))
 		);
-		return { eligibleSlots, ineligibleCount, missingCprCount, openSlotCount };
+		return { eligibleSlots, ineligibleCount, missingCprCount, missingLimitsCount, openSlotCount };
 	};
 
 	const getProfileMemberIdentity = (profile) => {
@@ -2797,7 +2826,7 @@
 			: [];
 		const cprEligibility = recommendationMode === "cpr"
 			? findCprEligibility(planner, memberId, cprRequirements)
-			: { eligibleSlots: [], ineligibleCount: 0, missingCprCount: 0, openSlotCount: 0 };
+			: { eligibleSlots: [], ineligibleCount: 0, missingCprCount: 0, missingLimitsCount: 0, openSlotCount: 0 };
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
@@ -2832,6 +2861,7 @@
 			cprEligibleSlots: cprEligibility.eligibleSlots,
 			cprIneligibleCount: cprEligibility.ineligibleCount,
 			cprMissingCount: cprEligibility.missingCprCount,
+			cprMissingLimitsCount: cprEligibility.missingLimitsCount,
 			cprOpenSlotCount: cprEligibility.openSlotCount,
 			cprMemberStatus,
 			missingCpr,
@@ -2857,6 +2887,7 @@
 		cprEligibleSlots: [],
 		cprIneligibleCount: 0,
 		cprMissingCount: 0,
+		cprMissingLimitsCount: 0,
 		cprOpenSlotCount: 0,
 		cprMemberStatus: "",
 		missingCpr: false,
@@ -2903,6 +2934,8 @@
 			return;
 		}
 
+		const requestVersion = ++state.requestVersion;
+		const isCurrentRequest = () => requestVersion === state.requestVersion && getStoredKey() === key;
 		saveStoredKey(key);
 		state.lastAttemptAt = Date.now();
 		state.loading = true;
@@ -2912,13 +2945,17 @@
 
 		try {
 			const previousFactionId = getPlannerFactionId(state.profile);
+			const previousMemberId = Number(state.profile?.player_id || 0);
 			let profile = force ? null : getCachedProfile(key);
+			let fetchedProfile = false;
 			if (!profile) {
 				state.progress = "Validating API key with Torn...";
 				render();
 				profile = await getProfileWithKey(key);
-				saveCachedProfile(key, profile);
+				fetchedProfile = true;
 			}
+			if (!isCurrentRequest()) return;
+			if (fetchedProfile) saveCachedProfile(key, profile);
 			if (!state.active || !isOcCrimesPage()) {
 				state.lastAttemptAt = 0;
 				state.progress = "";
@@ -2929,7 +2966,8 @@
 				throw new Error("Your Torn profile does not currently show a faction.");
 			}
 			state.profile = profile;
-			if (previousFactionId && previousFactionId !== currentFactionId) {
+			if ((previousFactionId && previousFactionId !== currentFactionId) ||
+				(previousMemberId && previousMemberId !== Number(profile.player_id))) {
 				stopHighlightLock();
 				clearRecommendationJoinCues();
 				clearRecommendationHighlights();
@@ -2951,6 +2989,7 @@
 				state.lastPayload ? state.snapshotRevision : "",
 				force
 			);
+			if (!isCurrentRequest()) return;
 			const checkedAt = Math.floor(Date.now() / 1000);
 			if (!state.active || !isOcCrimesPage()) {
 				state.lastAttemptAt = 0;
@@ -3021,12 +3060,15 @@
 				void recordScriptAccessIfNeeded(state.profile, planner);
 			}
 		} catch (error) {
+			if (!isCurrentRequest()) return;
 			state.error = getFriendlyErrorMessage(error);
 			state.progress = "";
 		} finally {
-			state.loading = false;
-			render();
-			scheduleAutoRefresh();
+			if (isCurrentRequest()) {
+				state.loading = false;
+				render();
+				scheduleAutoRefresh();
+			}
 		}
 	};
 
@@ -3183,7 +3225,7 @@
 		const miniMeta = [
 			`Start ${startLabel}`,
 			finishLabel ? `Finish ${finishLabel}` : "",
-			recommendation.cpr ? `${Math.round(Number(recommendation.cpr || 0))}% CPR` : "",
+			getCprNumber(recommendation.cpr) !== undefined ? `${Math.round(Number(recommendation.cpr))}% CPR` : "",
 			successChance ? `${successChance} success` : "",
 		]
 			.filter(Boolean)
@@ -3210,7 +3252,7 @@
 		const linkLabel = cprMode ? "Find eligible role" : `View role in OC #${slot.crimeId}`;
 		const meta = [
 			slot.difficulty ? `T${slot.difficulty}` : "",
-			slot.cpr ? `${Math.round(Number(slot.cpr || 0))}% CPR` : "",
+			getCprNumber(slot.cpr) !== undefined ? `${Math.round(Number(slot.cpr))}% CPR` : "",
 			slot.cprBand ? `needs ${slot.cprBand}` : "",
 			successChance ? `${successChance} success` : "",
 		]
@@ -3239,7 +3281,7 @@
 		const roleChips = slots
 			.map((slot) => {
 				const role = slot.position || slot.role || "Slot";
-				const cpr = slot.cpr ? `${Math.round(Number(slot.cpr || 0))}%` : "CPR ?";
+				const cpr = getCprNumber(slot.cpr) !== undefined ? `${Math.round(Number(slot.cpr))}%` : "CPR ?";
 				const requirement = slot.cprBand ? `Needs ${slot.cprBand}` : "Within limits";
 				return `<span class="ocp-cpr-role-chip" title="${escapeHtml(`${role}: ${cpr}. ${requirement}`)}"><span>${escapeHtml(role)}</span><strong>${escapeHtml(cpr)}</strong>${slot.cprBand ? `<span class="ocp-cpr-role-requirement">needs ${escapeHtml(slot.cprBand)}</span>` : ""}</span>`;
 			})
@@ -3301,9 +3343,11 @@
 		const eligibleItems = eligibleCrimeGroups.map(cprEligibleCrimeCard).join("");
 		const unavailableCount = Number(payload.cprIneligibleCount || 0);
 		const missingCount = Number(payload.cprMissingCount || 0);
+		const missingLimitsCount = Number(payload.cprMissingLimitsCount || 0);
 		const exclusionSummary = [
 			unavailableCount ? `${unavailableCount} outside your CPR limits` : "",
 			missingCount ? `${missingCount} missing role CPR` : "",
+			missingLimitsCount ? `${missingLimitsCount} missing CPR limits` : "",
 		]
 			.filter(Boolean)
 			.join(" | ");
@@ -3311,9 +3355,9 @@
 		const roleCount = eligibleSlots.length;
 		const crimeCount = eligibleCrimeGroups.length;
 		const openSlotCount = Number(payload.cprOpenSlotCount || 0);
-		let rule = "No allowed roles.";
+		let rule = "No open eligible roles.";
 		if (roleCount) {
-			rule = "Green roles are allowed.";
+			rule = "Green roles are open and within your CPR limits.";
 		} else if (payload.cprMemberStatus === "not_full_member") {
 			rule = "Recruit status: roles appear after full membership.";
 		} else if (payload.cprMemberStatus === "missing_cpr") {
@@ -3324,19 +3368,21 @@
 			rule = "No roles within your CPR limits.";
 		} else if (missingCount) {
 			rule = "No roles: CPR is missing for these roles.";
+		} else if (missingLimitsCount) {
+			rule = "No roles: CPR limits are missing for these roles.";
 		}
 
 		return `
 			<div class="ocp-cpr-overview">
 				<div class="ocp-cpr-summary">
 					<span class="ocp-cpr-mode">CPR</span>
-					<span class="ocp-cpr-counts"><strong>${roleCount} allowed</strong><span>${crimeCount} OC${crimeCount === 1 ? "" : "s"}</span></span>
+					<span class="ocp-cpr-counts"><strong>${roleCount} open eligible</strong><span>${crimeCount} OC${crimeCount === 1 ? "" : "s"}</span></span>
 				</div>
 				<div class="ocp-cpr-rule"><span class="ocp-cpr-swatch" aria-hidden="true"></span><span>${escapeHtml(rule)}</span></div>
 				${snapshotStatus ? `<div class="ocp-cpr-warning">${snapshotStatus}</div>` : ""}
 			</div>
 			${eligibleItems ? `<details class="ocp-flexible ocp-cpr-details"${state.flexibleOpen ? " open" : ""}>
-				<summary>Allowed roles (${roleCount})</summary>
+				<summary>Open eligible roles (${roleCount})</summary>
 				<div class="ocp-flexible-body">
 					${exclusionSummary ? `<div class="ocp-flexible-note ocp-muted">${escapeHtml(exclusionSummary)}</div>` : ""}
 					${eligibleItems}
@@ -3677,6 +3723,8 @@
 		});
 		panel.querySelector(".ocp-forget")?.addEventListener("click", () => {
 			stopHighlightLock();
+			state.requestVersion += 1;
+			state.loading = false;
 			storage.remove(STORAGE_KEY);
 			storage.remove(PROFILE_STORAGE_KEY);
 			clearCachedMemberPayload();
@@ -3763,7 +3811,9 @@
 		if (state.pageObserver || typeof MutationObserver !== "function" || !document.body) return;
 		state.pageObserver = new MutationObserver((mutations) => {
 			const relevant = mutations.some((mutation) =>
-				[...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesOcDom)
+				[...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesOcDom) ||
+				(!isInsidePanel(mutation.target) && mutation.target instanceof Element &&
+					!!mutation.target.closest(`${OC_ROOT_SELECTOR}, [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot']`))
 			);
 			if (relevant) queuePageDomSync();
 		});

@@ -1,0 +1,492 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "exact-numbered",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle #1": 40,
+          "Muscle #2": 85
+        }
+      },
+      "expected": 85
+    },
+    {
+      "id": "plain-numbered",
+      "crimeName": "Smoke and Wing Mirrors",
+      "position": "Hustler 2",
+      "role": "Hustler",
+      "crimes": {
+        "Smoke and Wing Mirrors": {
+          "Hustler #1": 90,
+          "Hustler2": 65
+        }
+      },
+      "expected": 65
+    },
+    {
+      "id": "spaced-index",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle # 2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "  mUsClE  # 2 ": 72
+        }
+      },
+      "expected": 72
+    },
+    {
+      "id": "no-sibling",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle #1": 80
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "legacy-generic",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 67
+        }
+      },
+      "expected": 67
+    },
+    {
+      "id": "exact-before-generic",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": 70
+        }
+      },
+      "expected": 70
+    },
+    {
+      "id": "literal-alias-before-canonical",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle2": 82,
+          "Muscle #2": 63
+        }
+      },
+      "expected": 63
+    },
+    {
+      "id": "literal-alias-reversed",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle #2": 63,
+          "Muscle2": 82
+        }
+      },
+      "expected": 82
+    },
+    {
+      "id": "zero-is-real",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": 0
+        }
+      },
+      "expected": 0
+    },
+    {
+      "id": "null-blocks-generic",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": null
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "blank-is-unknown",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": "  "
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "boolean-is-unknown",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "array-is-unknown",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": [
+            70
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "over-100-is-unknown",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": 101
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "negative-is-unknown",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle": 99,
+          "Muscle #2": -1
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "numeric-string",
+      "crimeName": "Guardian Ángels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": "67.5"
+        }
+      },
+      "expected": 67.5
+    },
+    {
+      "id": "decomposed-unicode",
+      "crimeName": "  GUARDIAN ÁNGELS ",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": 60
+        },
+        "Guardian Ángels": {
+          "Enforcer": 77
+        }
+      },
+      "expected": 77
+    },
+    {
+      "id": "exact-crime-wins",
+      "crimeName": "Guardian Angels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Ángels": {
+          "Enforcer": 77
+        },
+        "Guardian Angels": {
+          "Enforcer": 60
+        }
+      },
+      "expected": 60
+    },
+    {
+      "id": "exact-crime-null-blocks-alias",
+      "crimeName": "Guardian Angels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Ángels": {
+          "Enforcer": 77
+        },
+        "Guardian Angels": {
+          "Enforcer": null
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "partial-crime-role-alias",
+      "crimeName": "Guardian Angels",
+      "position": "Engineer",
+      "role": "Engineer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": 60
+        },
+        "Guardian Ángels": {
+          "Engineer": 68
+        }
+      },
+      "expected": 68
+    },
+    {
+      "id": "distinct-crime-punctuation",
+      "crimeName": "Guardian-Angels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": 60
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "distinct-crime-number",
+      "crimeName": "Guardian Angels 2",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": 60
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "missing-crime",
+      "crimeName": "Guardian Angels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Other": {
+          "Enforcer": 60
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "hundred-valid",
+      "crimeName": "Guardian Angels",
+      "position": "Enforcer",
+      "role": "Enforcer",
+      "crimes": {
+        "Guardian Angels": {
+          "Enforcer": 100
+        }
+      },
+      "expected": 100
+    },
+    {
+      "id": "no-unnumbered-from-numbered",
+      "crimeName": "Window of Opportunity",
+      "position": "Muscle",
+      "role": "Muscle",
+      "crimes": {
+        "Window of Opportunity": {
+          "Muscle #1": 80,
+          "Muscle #2": 85
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "unknown-role-base-from-position",
+      "crimeName": "Smoke and Wing Mirrors",
+      "position": "Hustler #2",
+      "role": "Unknown",
+      "crimes": {
+        "Smoke and Wing Mirrors": {
+          "Hustler": 70
+        }
+      },
+      "expected": 70
+    },
+    {
+      "id": "unrelated-role-base-from-position",
+      "crimeName": "Smoke and Wing Mirrors",
+      "position": "Hustler #2",
+      "role": "Muscle",
+      "crimes": {
+        "Smoke and Wing Mirrors": {
+          "Hustler": 70,
+          "Muscle": 90
+        }
+      },
+      "expected": 70
+    },
+    {
+      "id": "no-unrelated-role-borrowing",
+      "crimeName": "Smoke and Wing Mirrors",
+      "position": "Hustler #2",
+      "role": "Muscle",
+      "crimes": {
+        "Smoke and Wing Mirrors": {
+          "Muscle": 90
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "specific-crime-alias-before-generic-80",
+      "crimeName": "Guardian Angels",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Guardian Angels": {
+          "Muscle": 60
+        },
+        "Guardian Ángels": {
+          "Muscle #2": 80
+        }
+      },
+      "expected": 80
+    },
+    {
+      "id": "specific-crime-alias-before-generic-0",
+      "crimeName": "Guardian Angels",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Guardian Angels": {
+          "Muscle": 60
+        },
+        "Guardian Ángels": {
+          "Muscle #2": 0
+        }
+      },
+      "expected": 0
+    },
+    {
+      "id": "specific-crime-alias-before-generic-null",
+      "crimeName": "Guardian Angels",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Guardian Angels": {
+          "Muscle": 60
+        },
+        "Guardian Ángels": {
+          "Muscle #2": null
+        }
+      },
+      "expected": null
+    },
+    {
+      "id": "specific-crime-source-priority",
+      "crimeName": "Guardian Angels",
+      "position": "Muscle #2",
+      "role": "Muscle",
+      "crimes": {
+        "Guardian Angels": {
+          "Muscle #2": 61
+        },
+        "Guardian Ángels": {
+          "Muscle #2": 80
+        }
+      },
+      "expected": 61
+    },
+    {
+      "id": "role-notation-priority",
+      "crimeName": "OC",
+      "position": " MUSCLE # 2 ",
+      "role": "Muscle",
+      "crimes": {
+        "OC": {
+          "Muscle #2": 70,
+          "Muscle # 2": 80
+        }
+      },
+      "expected": 80
+    },
+    {
+      "id": "generic-literal-with-trailing-index-space",
+      "crimeName": "OC",
+      "position": "Muscle #2 ",
+      "role": "Muscle",
+      "crimes": {
+        "OC": {
+          " Muscle ": 80,
+          "Muscle": 0
+        }
+      },
+      "expected": 0
+    },
+    {
+      "id": "numeric-position-uses-mapped-role",
+      "crimeName": "OC",
+      "position": "2",
+      "role": "Engineer",
+      "crimes": {
+        "OC": {
+          "Engineer": 70
+        }
+      },
+      "expected": 70
+    },
+    {
+      "id": "placeholder-numbered-position",
+      "crimeName": "OC",
+      "position": "Unknown #2",
+      "role": "Muscle #2",
+      "crimes": {
+        "OC": {
+          "Muscle #2": 70
+        }
+      },
+      "expected": 70
+    },
+    {
+      "id": "unknown-role-is-not-cpr",
+      "crimeName": "OC",
+      "position": "Unknown #2",
+      "role": "Unknown",
+      "crimes": {
+        "OC": {
+          "Unknown #2": 70,
+          "Unknown": 80
+        }
+      },
+      "expected": null
+    }
+  ]
+}

@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, plannerSnapshot = null, cacheSchemaVersion = 5 } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 6 } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -28,7 +28,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
   // Every browser request is intercepted. No live Torn/backend traffic or real keys.
   await context.route('**/*', request => request.fulfill({ contentType: 'text/html', body: html }));
   await page.goto(url);
-  await page.evaluate(({ saved, cpr, deferProfile, plannerSnapshot, cacheSchemaVersion }) => {
+  await page.evaluate(({ saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion }) => {
     const key = 'test-only';
     const profile = { player_id: 123, name: 'Test member', faction: { faction_id: 41309 } };
     const payload = {
@@ -53,13 +53,14 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     window.testCalls = [];
     window.testRequests = [];
     window.testPlannerRevisions = [];
+    window.testProfileResponse = profile;
     window.testReadMemberPayload = () => JSON.parse(cache.get('askeladds_oc_planner_member_payload') || 'null');
     window.GM_xmlhttpRequest = options => {
       const url = new URL(options.url);
       window.testCalls.push(url.pathname);
       window.testRequests.push({ path: url.pathname, method: options.method || 'GET', data: options.data || '' });
       if (url.pathname.endsWith('/bot-alerts')) window.testPlannerRevisions.push(url.searchParams.get('revision'));
-      const payload = options.url.includes('api.torn.com') ? profile
+      const payload = options.url.includes('api.torn.com') ? window.testProfileResponse
         : plannerSnapshot && url.pathname.endsWith('/bot-alerts')
           ? url.searchParams.get('revision') === plannerSnapshot.revision
             ? { notModified: true, revision: plannerSnapshot.revision, recommendationPolicy: plannerSnapshot.recommendationPolicy }
@@ -67,11 +68,12 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
           : { notModified: saved, recommendationPolicy: { mode: cpr ? 'cpr' : 'plan' } };
       const respond = () => options.onload({ status: 200, responseHeaders: 'content-type: application/json', responseText: JSON.stringify(payload) });
       if (deferProfile && options.url.includes('api.torn.com')) window.testResolveProfile = respond;
+      else if (deferPlanner && url.pathname.endsWith('/bot-alerts')) window.testResolvePlanner = respond;
       else queueMicrotask(respond);
     };
     window.nativeJoins = 0;
     document.querySelector('.native-join')?.addEventListener('click', () => { window.nativeJoins++; });
-  }, { saved, cpr, deferProfile, plannerSnapshot, cacheSchemaVersion });
+  }, { saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion });
   await page.addScriptTag({ content: source });
   return page;
 }
@@ -239,6 +241,42 @@ test('leaving during key validation does not continue fetching the planner or sc
   assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), 1, 'returning reuses the validated profile and resumes the cancelled planner read');
 });
 
+test('forgetting a key cancels obsolete profile results without blocking the next account',async t=>{
+  const page=await open(t,{deferProfile:true});
+  await page.locator(`${panel} .ocp-api-key`).fill('first-key');
+  await page.locator(`${panel} .ocp-save-refresh`).click();
+  await page.waitForFunction(()=>!!window.testResolveProfile);
+  await page.evaluate(()=>{
+    window.finishOldProfile=testResolveProfile;
+    testMenu['OC Planner: forget API key']();
+    window.testProfileResponse={player_id:456,name:'Next member',faction:{faction_id:41309}};
+  });
+  await page.locator(`${panel} .ocp-api-key`).fill('second-key');
+  await page.locator(`${panel} .ocp-save-refresh`).click();
+  await page.waitForFunction(()=>window.testResolveProfile!==window.finishOldProfile);
+  await page.evaluate(()=>testResolveProfile());
+  await page.waitForFunction(()=>testReadMemberPayload()?.memberId===456);
+  await page.evaluate(()=>finishOldProfile());
+  await page.waitForTimeout(100);
+  assert.equal((await page.evaluate(()=>testReadMemberPayload())).memberId,456);
+  assert.match(await page.locator(`${panel} .ocp-title`).innerText(),/Next member/);
+  assert.equal(await page.evaluate(()=>testCalls.filter(path=>path.endsWith('/bot-alerts')).length),1,'discarded profile must not trigger a backend read');
+});
+
+test('forgetting a key cancels an obsolete backend response',async t=>{
+  const page=await open(t,{saved:true,deferPlanner:true});
+  await page.waitForFunction(()=>!!window.testResolvePlanner);
+  await page.evaluate(()=>{
+    window.finishOldPlanner=testResolvePlanner;
+    testMenu['OC Planner: forget API key']();
+    finishOldPlanner();
+  });
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>testReadMemberPayload()),null);
+  assert.equal(await page.locator(`${panel} .ocp-api-key`).count(),1);
+  assert.doesNotMatch(await page.locator(`${panel} .ocp-title`).innerText(),/Test member/);
+});
+
 // Native order differs from the planner order, as on Torn's Window of Opportunity card.
 const numberedPositions = ['Engineer', 'Looter #1', 'Looter #2', 'Muscle #1', 'Muscle #2'];
 const numberedCrime = `<article data-crime-id="2229602"><h3>Window of Opportunity</h3>${numberedPositions.map(position => `
@@ -268,7 +306,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 5);
+  assert.equal(cached.schemaVersion, 6);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -304,7 +342,77 @@ test('CPR guidance matches Guardian Angels source aliases to the real Torn crime
   assert.equal(await page.evaluate(()=>nativeJoins),0);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4]) {
+test('native numbered highlights use the same aliases as CPR and never select a numbered sibling', async t => {
+  const html=fixture.replace(crime, `<article data-crime-id="101"><h3>Test OC</h3>
+    <div class="slot-wrapper" data-position="Hustler #1"><span class="title">HUSTLER #1</span><button class="native-join">Join</button></div>
+    <div class="slot-wrapper" data-position="Hustler #2"><span class="title">HUSTLER #2</span><button class="native-join">Join</button></div></article>`);
+  for (const position of ['Hustler2','Hustler 2','Hustler # 2']) {
+    const snapshot={revision:'native-alias-'+position,recommendationPolicy:{mode:'cpr'},planner:{id:'native-alias-run',
+      members:[{memberId:123,crimes:{'Test OC':{Hustler1:90,Hustler2:65}}}],
+      crimes:[{id:101,name:'Test OC',difficulty:3,status:'Recruiting',openSlots:2,
+        slots:[{position,role:'Hustler',minimumRecommendedCpr:0,maximumRecommendedCpr:70}]}]}};
+    const page=await open(t,{html,cpr:true,plannerSnapshot:snapshot});
+    await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+    await page.locator(`${panel} .ocp-save-refresh`).click();
+    await page.locator('.askeladds-oc-planner-role-cpr-eligible').first().waitFor();
+    assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(els=>els.map(el=>el.dataset.position)),['Hustler #2']);
+    await page.locator('[data-position="Hustler #2"] .title').evaluate(el=>el.textContent='HUSTLER #3');
+    await page.waitForFunction(()=>!document.querySelector('.askeladds-oc-planner-role-cpr-eligible'));
+    assert.equal(await page.evaluate(()=>nativeJoins),0);
+  }
+});
+
+test('real zero CPR is eligible in a zero band while invalid CPR and missing limits remain distinct', async t => {
+  for (const [cpr,limits,eligible,missing,missingLimits] of [
+    [0,{minimumRecommendedCpr:0,maximumRecommendedCpr:0},1,0,0],
+    [null,{minimumRecommendedCpr:0,maximumRecommendedCpr:100},0,1,0],
+    [65,{},0,0,1],
+  ]) {
+    const snapshot={revision:'zero-limits-fixture',recommendationPolicy:{mode:'cpr'},planner:{id:'zero-limits-run',
+      members:[{memberId:123,crimes:{'Test OC':{Driver:cpr}}}],
+      crimes:[{id:101,name:'Test OC',difficulty:3,status:'Recruiting',openSlots:1,
+        slots:[{position:'Driver',role:'Driver',...limits}]}]}};
+    const page=await open(t,{cpr:true,plannerSnapshot:snapshot});
+    await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+    await page.locator(`${panel} .ocp-save-refresh`).click();
+    await page.waitForFunction(()=>testReadMemberPayload()?.payload?.plannerRunId==='zero-limits-run');
+    const payload=await page.evaluate(()=>testReadMemberPayload().payload);
+    assert.equal(payload.cprEligibleSlots.length,eligible);
+    assert.equal(payload.cprMissingCount,missing);
+    assert.equal(payload.cprMissingLimitsCount,missingLimits);
+    if (eligible) {
+      await page.locator('.askeladds-oc-planner-role-cpr-eligible').first().waitFor();
+      const callCount=await page.evaluate(()=>testCalls.length);
+      await page.locator('article .slot').evaluate(el=>el.insertAdjacentHTML('beforeend','<div><a href="profiles.php?XID=999">Another member</a></div>'));
+      await page.waitForFunction(()=>!document.querySelector('.askeladds-oc-planner-role-cpr-eligible'));
+      assert.equal(await page.evaluate(()=>testCalls.length),callCount,'native role occupancy changes need no requests');
+    }
+    else assert.equal(await page.locator('.askeladds-oc-planner-role-cpr-eligible').count(),0);
+    assert.match(await page.locator(`${panel} .ocp-cpr-counts`).innerText(),/open eligible/);
+  }
+});
+
+test('copied diagnostics distinguish missing CPR from missing limits and contain no API key',async t=>{
+  const snapshot={revision:'diagnostic-fixture',recommendationPolicy:{mode:'cpr'},planner:{id:'diagnostic-run',
+    members:[{memberId:123,crimes:{'Test OC':{Driver:65}}}],
+    crimes:[{id:101,name:'Test OC',difficulty:3,status:'Recruiting',openSlots:1,slots:[{position:'Driver',role:'Driver'}]}]}};
+  const page=await open(t,{cpr:true,plannerSnapshot:snapshot});
+  await page.locator(`${panel} .ocp-api-key`).fill('test-only');
+  await page.locator(`${panel} .ocp-save-refresh`).click();
+  await page.waitForFunction(()=>testReadMemberPayload()?.payload?.plannerRunId==='diagnostic-run');
+  await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{window.copiedDiagnostics=text;}}}));
+  await page.locator(`${panel} .ocp-disclosure summary`).click();
+  await page.locator(`${panel} .ocp-copy-diagnostics`).click();
+  await page.waitForFunction(()=>!!window.copiedDiagnostics);
+  const text=await page.evaluate(()=>copiedDiagnostics);
+  const diagnostics=JSON.parse(text);
+  assert.equal(diagnostics.cprEligibility.missingLimits,1);
+  assert.equal(diagnostics.cprEligibility.missingCpr,0);
+  assert.equal(diagnostics.cprEligibility.openRoles,1);
+  assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
+});
+
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
