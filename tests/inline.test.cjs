@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 10, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 11, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 10);
+  assert.equal(cached.schemaVersion, 11);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -594,6 +594,121 @@ test('the faction queue limit applies to both native and saved work and can be d
   assert.equal(await joins.last().isEnabled(), true);
   assert.equal(await page.locator('[data-ocp-cpr-locked]').count(), 2);
   assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), tornCalls);
+});
+
+function queueFallbackFixture(otherSlots, otherRoles = []) {
+  const occupied = [
+    occupiedQueueSlot('Driver', 77, 0),
+    occupiedQueueSlot('Lookout', 88, 0),
+    occupiedQueueSlot('Hacker', 99, 0),
+  ];
+  const roles = occupied.map(slot => nativeRole(slot.position, 75, {
+    occupant: slot.currentUserId, planningDegrees: 0,
+  }));
+  const refusedSlot = { position: 'Robber', minimumRecommendedCpr: 80, maximumRecommendedCpr: 100 };
+  const nativeDisabledSlot = { position: 'Safecracker', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };
+  const snapshot = liveQueueSnapshot('cpr', [
+    { id: 101, slots: [...occupied, targetQueueSlot, refusedSlot, nativeDisabledSlot] },
+    { id: 102, slots: otherSlots },
+  ]);
+  snapshot.recommendationPolicy.allowPlanningQueueFallback = true;
+  Object.assign(snapshot.planner.members[0].crimes['Test OC'], { 'Muscle #1': 80, Robber: 70, Safecracker: 80 });
+  const html = fixture.replace(crime, nativeCrime(101, [
+    ...roles, nativeRole('Muscle #2', 80), nativeRole('Robber', 70), nativeRole('Safecracker', 80, { disabled: true }),
+  ]) + (otherRoles.length ? nativeCrime(102, otherRoles) : ''));
+  return { html, plannerSnapshot: snapshot };
+}
+
+test('the last-resort exception follows live openings without bypassing CPR or Torn availability', async t => {
+  const alternative = { position: 'Muscle #1', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };
+  const occupiedAlternative = nativeRole('Muscle #1', 80, { occupant: 109, planningDegrees: 0 });
+  const page = await open(t, {
+    saved: true, cpr: true, clockTime: queueTime,
+    ...queueFallbackFixture([{ ...alternative, currentUserId: 109, currentProgress: 0 }], [occupiedAlternative]),
+  });
+  const role = page.locator('[data-oc-id="101"] [data-fixture-role="Muscle #2"]');
+  const exception = role.locator('.ocp-queue-fallback-reason');
+  const join = role.getByRole('button', { name: 'Join' });
+  const alternativeRole = page.locator('[data-oc-id="102"] [data-fixture-role="Muscle #1"]');
+  await exception.waitFor();
+  assert.equal(await join.isEnabled(), true);
+  assert.equal(await page.locator('[data-fixture-role="Robber"] button').isDisabled(), true);
+  assert.equal(await page.locator('[data-fixture-role="Safecracker"] button').isDisabled(), true);
+  assert.equal(await page.locator('[data-fixture-role="Safecracker"] .ocp-queue-fallback-reason').count(), 0);
+  const requestCount = await page.evaluate(() => testCalls.length);
+
+  await join.evaluate(el => el.addEventListener('click', () => { window.nativeJoins++; }));
+  await join.click();
+  assert.equal(await page.evaluate(() => nativeJoins), 1);
+  await alternativeRole.evaluate((el, openRole) => {
+    el.outerHTML = openRole;
+    // A join attempted before the observer paints must still see the new opening.
+    document.querySelector('[data-fixture-role="Muscle #2"] button').click();
+  }, nativeRole('Muscle #1', 80));
+  assert.equal(await page.evaluate(() => nativeJoins), 1);
+  await role.locator('[data-ocp-queue-locked]').waitFor();
+  await exception.waitFor({ state: 'detached' });
+  assert.equal(await alternativeRole.getByRole('button', { name: 'Join' }).isEnabled(), true);
+
+  await alternativeRole.evaluate((el, occupiedRole) => { el.outerHTML = occupiedRole; }, occupiedAlternative);
+  await exception.waitFor();
+  assert.equal(await join.isEnabled(), true);
+  assert.equal(await page.evaluate(() => testCalls.length), requestCount);
+});
+
+test('a saved eligible opening elsewhere prevents the exception until that role is filled', async t => {
+  const alternative = { position: 'Muscle #1', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };
+  const page = await open(t, {
+    saved: true, cpr: true, clockTime: queueTime,
+    ...queueFallbackFixture([alternative]),
+  });
+  const role = page.locator('[data-fixture-role="Muscle #2"]');
+  const exception = role.locator('.ocp-queue-fallback-reason');
+  const join = role.getByRole('button', { name: 'Join' });
+  await role.locator('[data-ocp-queue-locked]').waitFor();
+  assert.equal(await exception.count(), 0);
+  assert.equal(await join.isDisabled(), true);
+  const tornCalls = await page.evaluate(() => testCalls.filter(path => path === '/user/').length);
+
+  await page.evaluate(() => {
+    testPlannerSnapshot.revision = 'queue-fallback-no-alternative';
+    Object.assign(testPlannerSnapshot.planner.crimes[1].slots[0], { currentUserId: 109, currentProgress: 0 });
+  });
+  await page.clock.fastForward(5 * 60 * 1000 + 500);
+  await exception.waitFor();
+  assert.equal(await join.isEnabled(), true);
+  assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), tornCalls);
+});
+
+test('the full-plan exception is scoped to the member’s own recommendation', async t => {
+  const occupied = [
+    occupiedQueueSlot('Driver', 77, 0),
+    occupiedQueueSlot('Lookout', 88, 0),
+    occupiedQueueSlot('Hacker', 99, 0),
+  ];
+  const planned = (position, memberId, hours) => ({
+    position, minimumRecommendedCpr: 0, maximumRecommendedCpr: 100,
+    recommended: { memberId, cpr: 80, available: 'now' },
+    plannedStartAt: queueNow + hours * 3600,
+  });
+  const snapshot = liveQueueSnapshot('plan', [
+    { id: 101, slots: [...occupied, planned('Muscle #2', 123, 72), planned('Robber', 456, 96)] },
+    { id: 102, slots: [planned('Muscle #1', 789, 0)] },
+  ]);
+  snapshot.recommendationPolicy.allowPlanningQueueFallback = true;
+  snapshot.planner.members[0].crimes['Test OC']['Muscle #1'] = 80;
+  const html = fixture.replace(crime, nativeCrime(101, [
+    ...occupied.map(slot => nativeRole(slot.position, 75, { occupant: slot.currentUserId, planningDegrees: 0 })),
+    nativeRole('Muscle #2', 80), nativeRole('Robber', 80),
+  ]) + nativeCrime(102, [nativeRole('Muscle #1', 80)]));
+  const page = await open(t, { saved: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  const own = page.locator('[data-fixture-role="Muscle #2"]');
+  const otherLong = page.locator('[data-fixture-role="Robber"]');
+  await own.locator('.ocp-queue-fallback-reason').waitFor();
+  assert.equal(await own.getByRole('button', { name: 'Join' }).isEnabled(), true);
+  assert.equal(await otherLong.locator('[data-ocp-queue-locked]').isDisabled(), true);
+  assert.equal(await otherLong.locator('.ocp-queue-fallback-reason').count(), 0);
+  assert.equal(await page.locator('[data-fixture-role="Muscle #1"] button').isEnabled(), true);
 });
 
 test('the live full-plan queue counts a scheduled member only once after they join another role', async t => {
