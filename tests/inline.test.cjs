@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 7, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 8, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 7);
+  assert.equal(cached.schemaVersion, 8);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -458,6 +458,119 @@ function queueSnapshot(mode) {
     },
   };
 }
+
+// Torn's CSS-module markup keeps the role title and Join in separate header/body
+// children of the card, with additional title classes inside the body.
+function nativeRole(position, cpr, { disabled = false, occupant } = {}) {
+  return `<div class="wrapper___a3${occupant ? '' : ' waitingJoin___b4'}" data-fixture-role="${position}">
+    <div class="slotHeader___c5"><span class="title___d6">${position.toUpperCase()}
+      <span class="successChance___e7">${cpr ?? '—'}</span></span></div>
+    <div class="slotBody___f8"><span class="title___g9">Role details</span>
+      ${occupant ? `<a href="/profiles.php?XID=${occupant}">Occupied</a>` : `
+        <div class="joinContainer___h0"><span>24hrs</span><div class="joinButtonContainer___j1">
+          <button class="joinButton___k2"${disabled ? ' disabled' : ''}><span>Join</span></button>
+        </div></div>`}
+    </div></div>`;
+}
+
+function nativeCrime(id, roles) {
+  return `<article data-oc-id="${id}"><h3 class="panelTitle___p3">Test OC</h3>${roles.join('')}</article>`;
+}
+
+test('Torn native cards show distinct CPR and queue colors and stop only the blocked Join buttons', async t => {
+  const withinBand = { minimumRecommendedCpr: 65, maximumRecommendedCpr: 85 };
+  const openSlot = position => ({ position, ...withinBand });
+  const filled = (position, currentUserId, currentProgress) => ({ position, currentUserId, currentProgress });
+  const html = fixture.replace(crime,
+    nativeCrime(101, [
+      nativeRole('Muscle #1', 74),
+      nativeRole('Muscle #2', 58),
+      nativeRole('Driver', null),
+      nativeRole('Hacker', 90, { disabled: true }),
+    ]) + nativeCrime(102, [
+      nativeRole('Muscle #2', 58),
+      nativeRole('Driver', null, { occupant: 77 }),
+      nativeRole('Lookout', null, { occupant: 88 }),
+      nativeRole('Hacker', null, { occupant: 99 }),
+    ]));
+  const snapshot = {
+    revision: 'native-cards', recommendationPolicy: { mode: 'cpr' },
+    planner: {
+      id: 'native-cards-run', generatedAt: queueTime, snapshotKind: 'cpr',
+      crimes: [
+        { id: 101, status: 'Recruiting', name: 'Test OC', openSlots: 4,
+          slots: ['Muscle #1', 'Muscle #2', 'Driver', 'Hacker'].map(openSlot) },
+        { id: 102, status: 'Recruiting', name: 'Test OC', openSlots: 1,
+          slots: [openSlot('Muscle #2'), filled('Driver', 77, 0.5), filled('Lookout', 88, 0), filled('Hacker', 99, 0)] },
+      ],
+      members: [{ memberId: 123, crimes: { 'Test OC': { 'Muscle #1': 74, 'Muscle #2': 58, Hacker: 90 } } }],
+    },
+  };
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime, width: 375 });
+  const role = (id, name) => page.locator(`[data-oc-id="${id}"] [data-fixture-role="${name}"]`);
+  const green = 'askeladds-oc-planner-role-cpr-eligible';
+  const red = 'askeladds-oc-planner-role-cpr-blocked';
+  const queue = 'askeladds-oc-planner-role-queue-full';
+  await page.locator(`[data-fixture-role].${queue}`).waitFor({ timeout: 5000 });
+  assert.match(await role(101, 'Muscle #1').getAttribute('class'), new RegExp(green));
+  assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(red));
+  assert.match(await role(102, 'Muscle #2').getAttribute('class'), new RegExp(queue));
+  assert.doesNotMatch(await role(102, 'Muscle #2').getAttribute('class'), new RegExp(red));
+  assert.doesNotMatch(await role(101, 'Driver').getAttribute('class'), new RegExp(`${red}|${green}|${queue}`));
+  for (const [card, color] of [[role(101, 'Muscle #1'), 'green'], [role(101, 'Muscle #2'), 'red'], [role(102, 'Muscle #2'), 'red']]) {
+    const colors = await card.locator('.slotHeader___c5, .slotBody___f8').evaluateAll(
+      parts => parts.map(part => getComputedStyle(part).backgroundColor),
+    );
+    assert.equal(colors.length, 2);
+    for (const value of colors) {
+      const [redChannel, greenChannel] = value.match(/\d+/g).map(Number);
+      assert.ok(color === 'green' ? greenChannel > redChannel : redChannel > greenChannel, `${color} card uses ${value}`);
+    }
+  }
+  assert.equal(await role(101, 'Driver').getByRole('button', { name: 'Join' }).isEnabled(), true);
+  const cprBlocked = role(101, 'Muscle #2').getByRole('button', { name: 'Join' });
+  const queueBlocked = role(102, 'Muscle #2').getByRole('button', { name: 'Join' });
+  const tornDisabled = role(101, 'Hacker').getByRole('button', { name: 'Join' });
+  assert.equal(await cprBlocked.getAttribute('aria-disabled'), 'true');
+  assert.equal(await queueBlocked.getAttribute('aria-disabled'), 'true');
+  assert.equal(await role(101, 'Muscle #2').getByText(/CPR 58%.*needs 65%/).isVisible(), true);
+  assert.equal(await role(101, 'Hacker').getByText(/CPR 90%.*max 85%/).isVisible(), true);
+  assert.equal(await role(102, 'Muscle #2').getByText(/Queue full/).isVisible(), true);
+  assert.equal(await tornDisabled.isDisabled(), true);
+
+  await page.evaluate(() => {
+    window.joinedRoles = [];
+    document.addEventListener('click', event => {
+      const button = event.target.closest('button[class*="joinButton___"]');
+      if (button) joinedRoles.push(button.closest('[data-fixture-role]').dataset.fixtureRole);
+    });
+  });
+  const requestCount = await page.evaluate(() => testCalls.length);
+  await cprBlocked.evaluate(button => button.click());
+  await queueBlocked.evaluate(button => button.click());
+  await role(101, 'Muscle #1').getByRole('button', { name: 'Join' }).click();
+  assert.deepEqual(await page.evaluate(() => joinedRoles), ['Muscle #1']);
+  assert.equal(await page.evaluate(() => testCalls.length), requestCount);
+
+  await page.evaluate(() => {
+    testPlannerSnapshot.revision = 'native-cards-updated';
+    const cpr = testPlannerSnapshot.planner.members[0].crimes['Test OC'];
+    cpr['Muscle #2'] = 72;
+    cpr.Hacker = 75;
+    testMenu['OC Planner: refresh']();
+  });
+  await page.waitForFunction(() => testReadMemberPayload()?.snapshotRevision === 'native-cards-updated');
+  assert.equal(await cprBlocked.isEnabled(), true);
+  assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(green));
+  assert.equal(await tornDisabled.getAttribute('aria-disabled'), null);
+  assert.equal(await tornDisabled.isDisabled(), true);
+  assert.equal(await queueBlocked.isDisabled(), true);
+
+  await page.evaluate(() => testMenu['OC Planner: forget API key']());
+  assert.equal(await cprBlocked.getAttribute('aria-disabled'), null);
+  assert.equal(await queueBlocked.getAttribute('aria-disabled'), null);
+  assert.equal(await tornDisabled.isDisabled(), true);
+});
 
 test('full plan disables only the exact Join with over 48h ahead, and restores it after a fresh plan', async t => {
   const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: queueSnapshot('plan'), clockTime: queueTime });

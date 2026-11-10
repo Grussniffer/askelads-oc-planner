@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.71
+// @version      0.2.72
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,11 +25,12 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.71";
-	const PAYLOAD_CACHE_VERSION = 7;
+	const SCRIPT_VERSION = "0.2.72";
+	const PAYLOAD_CACHE_VERSION = 8;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const PLANNING_QUEUE_LIMIT_SECONDS = 48 * 3600;
 	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
+	const CPR_LOCK_ATTRIBUTE = "data-ocp-cpr-locked";
 	const QUEUE_LOCK_REASON = "Queue full · over 48h of planning ahead";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
@@ -42,6 +43,9 @@
 		"[data-crime-id], [data-crimeid], [data-oc-id], a[href*='crimeId'], a[href*='crimeID']";
 	const JOIN_CUE_BADGE_CLASS = "askeladds-oc-planner-join-cue";
 	const CPR_ELIGIBLE_ROLE_CLASS = "askeladds-oc-planner-role-cpr-eligible";
+	const CPR_BLOCKED_ROLE_CLASS = "askeladds-oc-planner-role-cpr-blocked";
+	const QUEUE_FULL_ROLE_CLASS = "askeladds-oc-planner-role-queue-full";
+	const ROLE_STATE_CLASSES = [CPR_ELIGIBLE_ROLE_CLASS, CPR_BLOCKED_ROLE_CLASS, QUEUE_FULL_ROLE_CLASS];
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
 	const ACTIVE_REFRESH_MS = 60 * 1000;
@@ -123,22 +127,23 @@
 	};
 
 	let lastRenderedMarkup = "";
-	const queueLockedControls = new Map();
+	const lockedJoinControls = new Map();
+	const paintedRoles = new Map();
 	let queueUnlockTimer;
 
 	addStyle(`
-		[${QUEUE_LOCK_ATTRIBUTE}] {
-			opacity: .55;
-			cursor: not-allowed;
+		[${QUEUE_LOCK_ATTRIBUTE}], [${CPR_LOCK_ATTRIBUTE}] {
+			filter: grayscale(1);
+			opacity: .56;
+			cursor: not-allowed !important;
 		}
-		.ocp-queue-reason {
+		.ocp-queue-reason, .ocp-cpr-reason {
 			display: block;
-			flex-basis: 100%;
-			grid-column: 1 / -1;
-			margin: 3px 0;
-			color: #f09c9c;
-			font-size: 11px;
-			line-height: 1.25;
+			padding: 4px 6px;
+			border-top: 1px solid var(--ocp-role-border, #b95858);
+			color: #ffe7e7;
+			font: 700 11px/1.25 Arial, sans-serif;
+			text-align: center;
 			overflow-wrap: anywhere;
 		}
 		#${PANEL_ID} {
@@ -554,8 +559,28 @@
 			margin: 0;
 		}
 		.${CPR_ELIGIBLE_ROLE_CLASS} {
-			outline: 3px solid #76d26d !important;
-			box-shadow: 0 0 0 3px rgba(118, 210, 109, 0.24), 0 0 16px rgba(118, 210, 109, 0.42) !important;
+			--ocp-role-bg: #285632;
+			--ocp-role-head: #34663d;
+			--ocp-role-border: #75bd79;
+		}
+		.${CPR_BLOCKED_ROLE_CLASS}, .${QUEUE_FULL_ROLE_CLASS} {
+			--ocp-role-bg: #632e32;
+			--ocp-role-head: #79373b;
+			--ocp-role-border: #d5787d;
+		}
+		:is(.${ROLE_STATE_CLASSES.join(", .")}) {
+			background: var(--ocp-role-bg) !important;
+			color: #fff;
+			box-shadow: inset 0 0 0 1px var(--ocp-role-border) !important;
+			border-radius: 6px;
+		}
+		:is(.${ROLE_STATE_CLASSES.join(", .")}) > :is([class*="slotHeader"], [class*="SlotHeader"]) {
+			background: var(--ocp-role-head) !important;
+			color: #fff;
+		}
+		:is(.${ROLE_STATE_CLASSES.join(", .")}) > :is([class*="slotBody"], [class*="SlotBody"]) {
+			background: var(--ocp-role-bg) !important;
+			color: #fff;
 		}
 		.askeladds-oc-planner-role-highlight {
 			outline: 3px solid #ffd166 !important;
@@ -1455,8 +1480,7 @@
 		document.getElementById(PANEL_ID)?.remove();
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
-		clearCprEligibilityHighlights();
-		clearQueueLocks();
+		clearNativeRoleStates();
 		lastRenderedMarkup = "";
 		state.pendingHighlight = null;
 		state.targetFeedback = null;
@@ -1587,22 +1611,29 @@
 		return role && Number.isInteger(ordinal) && ordinal > 0 ? { role, ordinal } : null;
 	};
 
-	const getRoleCandidateWrapper = (element) =>
-		element?.closest("[class*='wrapper'], [class*='slot'], [class*='Slot'], li, tr, [role='row']") ||
-		element ||
-		null;
+	const NATIVE_ROLE_HEADER = "[class*='slotHeader___'], [class*='SlotHeader___']";
+	const NATIVE_JOIN_BUTTON = "button[class*='joinButton___']";
 
-	const getRoleTitleText = (element) =>
-			normalizeRoleName(element?.querySelector?.("[class*='title']")?.textContent || element?.textContent);
+	const getRoleCandidateWrapper = (element) =>
+		element?.closest(NATIVE_ROLE_HEADER)?.parentElement ||
+		element?.closest("[class*='wrapper'], [class*='slot'], [class*='Slot'], li, tr, [role='row']") ||
+		element || null;
+
+	const getRoleTitleText = (element) => {
+		const title = element?.querySelector?.("[class*='title']") || element;
+		if (!title?.querySelector("[class*='successChance___']")) return normalizeRoleName(title?.textContent);
+		const label = title.cloneNode(true);
+		label.querySelectorAll("[class*='successChance___']").forEach(chance => chance.remove());
+		return normalizeRoleName(label.textContent);
+	};
 
 	const findExactRoleTitleElement = (scope, recommendation, strict = false) => {
 		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
 		const root = scope || document;
 		const seenWrappers = new Set();
-		const entries = Array.from(
-			root.querySelectorAll(ROLE_TITLE_SELECTOR)
-		)
+		const nativeHeaders = root.querySelectorAll(NATIVE_ROLE_HEADER);
+		const entries = Array.from(nativeHeaders.length ? nativeHeaders : root.querySelectorAll(ROLE_TITLE_SELECTOR))
 			.filter((element) => !isInsidePanel(element))
 			.map((element) => ({
 				text: getRoleTitleText(element),
@@ -1861,52 +1892,6 @@
 			});
 	};
 
-	const clearCprEligibilityHighlights = () => {
-		document
-			.querySelectorAll(`.${CPR_ELIGIBLE_ROLE_CLASS}`)
-			.forEach((element) => element.classList.remove(CPR_ELIGIBLE_ROLE_CLASS));
-	};
-
-	const syncCprEligibilityHighlights = () => {
-		const payload = state.lastPayload;
-		if (
-			!state.active ||
-			!isOcCrimesPage() ||
-			payload?.noPlan ||
-			payload?.recommendationMode !== "cpr"
-		) {
-			clearCprEligibilityHighlights();
-			return;
-		}
-
-		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
-			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot)) && !getQueueLock(slot)
-		);
-		const desiredElements = new Set();
-		for (const slots of groupCprSlotsByCrime(eligibleSlots)) {
-			let crimeElement = null;
-			for (const slot of slots) {
-				crimeElement = findCrimeElement(slot.crimeId, slot, false);
-				if (crimeElement) break;
-			}
-			if (!crimeElement) continue;
-
-			const matchedRoleElements = new Set();
-			for (const slot of slots) {
-				const roleElement = findRoleElement(crimeElement, slot);
-				if (!roleElement || matchedRoleElements.has(roleElement)) continue;
-				matchedRoleElements.add(roleElement);
-				if (inspectRoleAvailability(roleElement).kind !== "found") continue;
-				desiredElements.add(roleElement);
-			}
-		}
-
-		document.querySelectorAll(`.${CPR_ELIGIBLE_ROLE_CLASS}`).forEach((element) => {
-			if (!desiredElements.has(element)) element.classList.remove(CPR_ELIGIBLE_ROLE_CLASS);
-		});
-		desiredElements.forEach((element) => element.classList.add(CPR_ELIGIBLE_ROLE_CLASS));
-	};
-
 	const clearRecommendationJoinCues = () => {
 		document
 			.querySelectorAll(`.${JOIN_CUE_BADGE_CLASS}`)
@@ -1948,78 +1933,118 @@
 		return lock?.unlockAt > Math.floor(Date.now() / 1000) ? lock : null;
 	};
 
-	const isJoinControl = (button) =>
+	const isJoinControl = (button) => button.matches(NATIVE_JOIN_BUTTON) ||
 		[button.getAttribute("aria-label"), button.textContent].some(label => normalizeText(label) === "join");
 
-	const findQueueJoinControl = (slot, crime) => {
+	const findRoleJoinTarget = (slot, crime) => {
 		if (!isVisibleElement(crime)) return null;
 
 		// The title can live inside a header separate from its Join button. Never
 		// climb into a container shared by two roles, or guess a numbered position.
-		for (let scope = findExactRoleTitleElement(crime, slot, true); scope && scope !== crime; scope = scope.parentElement) {
+		const role = findExactRoleTitleElement(crime, slot, true);
+		const nativeRole = Array.from(role?.children || []).some(child => child.matches(NATIVE_ROLE_HEADER));
+		for (let scope = role; scope && scope !== crime; scope = nativeRole ? null : scope.parentElement) {
 			const titles = [...scope.querySelectorAll(ROLE_TITLE_SELECTOR)];
 			const leaves = titles.filter(title => !title.querySelector(ROLE_TITLE_SELECTOR));
-			if (leaves.length > 1) return null;
+			if (!nativeRole && leaves.length > 1) return null;
 			const controls = [...scope.querySelectorAll("button, [role='button']")].filter(button =>
 				!isInsidePanel(button) && isVisibleElement(button) && getComputedStyle(button).visibility === "visible" &&
 				isJoinControl(button)
 			);
-			if (!controls.length) continue;
-			return controls.length === 1 && !getRoleOccupant(scope, false) ? controls[0] : null;
+			const nativeButtons = controls.filter(button => button.matches(NATIVE_JOIN_BUTTON));
+			const joins = nativeButtons.length ? nativeButtons : controls;
+			if (!joins.length) continue;
+			return joins.length === 1 && !getRoleOccupant(scope, false) ? { role: scope, button: joins[0] } : null;
 		}
 		return null;
 	};
 
-	const removeQueueLock = (button, binding) => {
-		button.removeAttribute(QUEUE_LOCK_ATTRIBUTE);
+	const getNativeRoleStates = () => {
+		const states = new Map();
+		const payload = state.lastPayload;
+		if (!payload || payload.noPlan) return states;
+		if (payload.recommendationMode === "cpr") {
+			for (const slot of payload.cprEligibleSlots || []) {
+				if (!state.takenRecommendationKeys.has(getRecommendationKey(slot))) {
+					states.set(queueRoleKey(slot), { slot, tone: CPR_ELIGIBLE_ROLE_CLASS });
+				}
+			}
+			for (const slot of payload.cprIneligibleSlots || []) {
+				states.set(queueRoleKey(slot), { slot, tone: CPR_BLOCKED_ROLE_CLASS, attribute: CPR_LOCK_ATTRIBUTE, reason: slot.reason });
+			}
+		}
+		for (const slot of Object.values(payload.queueLocks || {})) {
+			if (getQueueLock(slot)) {
+				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: QUEUE_LOCK_REASON });
+			}
+		}
+		return states;
+	};
+
+	const removeJoinLock = (button, binding) => {
+		button.removeAttribute(binding.attribute);
 		if (binding.previousAriaDisabled !== "true" && button.getAttribute("aria-disabled") === "true") {
 			if (binding.previousAriaDisabled === null) button.removeAttribute("aria-disabled");
 			else button.setAttribute("aria-disabled", binding.previousAriaDisabled);
 		}
-		binding.reason.remove();
-		queueLockedControls.delete(button);
+		binding.label.remove();
+		lockedJoinControls.delete(button);
 	};
 
-	const clearQueueLocks = () => {
+	const clearNativeRoleStates = () => {
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
-		for (const [button, binding] of queueLockedControls) removeQueueLock(button, binding);
+		for (const [button, binding] of lockedJoinControls) removeJoinLock(button, binding);
+		for (const [role, tone] of paintedRoles) role.classList.remove(tone);
+		paintedRoles.clear();
 	};
 
-	const syncQueueLocks = () => {
+	const syncNativeRoleStates = () => {
 		if (document.visibilityState === "hidden") return;
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
-		const now = Math.floor(Date.now() / 1000);
-		const desired = new Map();
+		const desiredRoles = new Map();
+		const desiredLocks = new Map();
 		const activeCrimeId = getCurrentPageCrimeId();
 		const crimeElements = new Map();
 		let nextUnlock = Infinity;
-		for (const slot of Object.values(state.lastPayload?.queueLocks || {})) {
-			if (!(slot.unlockAt > now)) continue;
-			nextUnlock = Math.min(nextUnlock, slot.unlockAt);
+		for (const roleState of getNativeRoleStates().values()) {
+			const { slot, tone, attribute } = roleState;
+			if (slot.unlockAt) nextUnlock = Math.min(nextUnlock, slot.unlockAt);
 			const id = String(slot.crimeId);
 			if (activeCrimeId && activeCrimeId !== id) continue;
 			const crime = crimeElements.get(id) || findCrimeElement(id, slot, false);
 			if (!crime) continue;
 			crimeElements.set(id, crime);
-			const control = findQueueJoinControl(slot, crime);
-			if (control) desired.set(control, slot);
+			const target = findRoleJoinTarget(slot, crime);
+			if (!target) continue;
+			desiredRoles.set(target.role, tone);
+			if (attribute) desiredLocks.set(target.button, { ...roleState, role: target.role });
 		}
 
-		for (const [button, binding] of queueLockedControls) {
-			if (desired.get(button) !== binding.slot || !binding.reason.isConnected) removeQueueLock(button, binding);
+		for (const [role, tone] of paintedRoles) {
+			if (desiredRoles.get(role) !== tone) role.classList.remove(tone);
 		}
-		for (const [button, slot] of desired) {
-			if (queueLockedControls.has(button)) continue;
-			const reason = document.createElement("span");
-			reason.className = "ocp-queue-reason";
-			reason.textContent = QUEUE_LOCK_REASON;
+		paintedRoles.clear();
+		for (const [role, tone] of desiredRoles) {
+			role.classList.add(tone);
+			paintedRoles.set(role, tone);
+		}
+		for (const [button, binding] of lockedJoinControls) {
+			const desired = desiredLocks.get(button);
+			if (desired?.attribute !== binding.attribute || desired.reason !== binding.label.textContent ||
+				binding.label.parentElement !== desired.role) removeJoinLock(button, binding);
+		}
+		for (const [button, { attribute, reason, role }] of desiredLocks) {
+			if (lockedJoinControls.has(button)) continue;
+			const label = document.createElement("span");
+			label.className = attribute === QUEUE_LOCK_ATTRIBUTE ? "ocp-queue-reason" : "ocp-cpr-reason";
+			label.textContent = reason;
 			const previousAriaDisabled = button.getAttribute("aria-disabled");
 			button.setAttribute("aria-disabled", "true");
-			button.setAttribute(QUEUE_LOCK_ATTRIBUTE, "");
-			button.after(reason);
-			queueLockedControls.set(button, { slot, reason, previousAriaDisabled });
+			button.setAttribute(attribute, "");
+			role.append(label);
+			lockedJoinControls.set(button, { attribute, label, previousAriaDisabled });
 		}
 		if (Number.isFinite(nextUnlock)) {
 			queueUnlockTimer = window.setTimeout(render, Math.min(nextUnlock * 1000 - Date.now() + 1, 2_147_483_647));
@@ -2036,15 +2061,14 @@
 		// Join against the current snapshot before it has an inline marker.
 		const nearbyId = button.closest("[data-crime-id], [data-crimeid], [data-oc-id]");
 		const crimeId = nearbyId ? getElementCrimeId(nearbyId) : getCurrentPageCrimeId();
-		const candidates = Object.values(state.lastPayload?.queueLocks || {});
-		const locked = candidates.some(slot => {
-			if ((crimeId && crimeId !== String(slot.crimeId)) || !getQueueLock(slot)) return false;
+		for (const { slot, attribute } of getNativeRoleStates().values()) {
+			if (!attribute || (crimeId && crimeId !== String(slot.crimeId))) continue;
 			const crime = findCrimeElement(slot.crimeId, slot);
-			return findQueueJoinControl(slot, crime) === button;
-		});
-		if (!locked) return;
-		event.preventDefault();
-		event.stopImmediatePropagation();
+			if (findRoleJoinTarget(slot, crime)?.button !== button) continue;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
 	}, true);
 
 	const getHighlightRecommendations = (recommendation) =>
@@ -2881,7 +2905,7 @@
 
 	const findCprEligibility = (planner, memberId, cprRequirements) => {
 		const eligibleSlots = [];
-		let ineligibleCount = 0;
+		const ineligibleSlots = [];
 		let missingCprCount = 0;
 		let missingLimitsCount = 0;
 		let openSlotCount = 0;
@@ -2898,12 +2922,19 @@
 					missingCprCount += 1;
 					continue;
 				}
-				if (!getSlotCprBand(slot, crime, cprRequirements)) {
+				const band = getSlotCprBand(slot, crime, cprRequirements);
+				if (!band) {
 					missingLimitsCount += 1;
 					continue;
 				}
-				if (!memberFitsSlotBand(cpr, slot, crime, cprRequirements)) {
-					ineligibleCount += 1;
+				if (cpr < band.min || cpr > band.max) {
+					const limit = cpr < band.min ? `needs ${band.min}%+` : `max ${band.max}%`;
+					ineligibleSlots.push({
+						crimeId: crime.id || slot.crimeId,
+						position: slot.position,
+						role: slot.role,
+						reason: `CPR ${cpr}% · ${limit}`,
+					});
 					continue;
 				}
 				eligibleSlots.push({
@@ -2926,7 +2957,7 @@
 				String(a.crimeName || "").localeCompare(String(b.crimeName || "")) ||
 				String(a.position || "").localeCompare(String(b.position || ""))
 		);
-		return { eligibleSlots, ineligibleCount, missingCprCount, missingLimitsCount, openSlotCount };
+		return { eligibleSlots, ineligibleSlots, missingCprCount, missingLimitsCount, openSlotCount };
 	};
 
 	const getProfileMemberIdentity = (profile) => {
@@ -3035,7 +3066,7 @@
 			: [];
 		const cprEligibility = recommendationMode === "cpr"
 			? findCprEligibility(planner, memberId, cprRequirements)
-			: { eligibleSlots: [], ineligibleCount: 0, missingCprCount: 0, missingLimitsCount: 0, openSlotCount: 0 };
+			: { eligibleSlots: [], ineligibleSlots: [], missingCprCount: 0, missingLimitsCount: 0, openSlotCount: 0 };
 		const missingCpr = (planner?.missingCprMembers || []).some(
 			(member) => Number(member.memberId) === memberId
 		);
@@ -3069,7 +3100,8 @@
 			unassigned,
 			flexibleSlots,
 			cprEligibleSlots: cprEligibility.eligibleSlots,
-			cprIneligibleCount: cprEligibility.ineligibleCount,
+			cprIneligibleSlots: cprEligibility.ineligibleSlots,
+			cprIneligibleCount: cprEligibility.ineligibleSlots.length,
 			cprMissingCount: cprEligibility.missingCprCount,
 			cprMissingLimitsCount: cprEligibility.missingLimitsCount,
 			cprOpenSlotCount: cprEligibility.openSlotCount,
@@ -3571,9 +3603,7 @@
 		const openSlotCount = Number(payload.cprOpenSlotCount || 0);
 		let rule = "No open eligible roles.";
 		if (roleCount) {
-			rule = eligibleSlots.some(getQueueLock)
-				? "Queue full roles meet CPR limits and reopen at 48h of planning ahead."
-				: "Green roles are open and within your CPR limits.";
+			rule = "Green fits your CPR. Red shows a CPR or queue restriction.";
 		} else if (payload.cprMemberStatus === "not_full_member") {
 			rule = "Recruit status: roles appear after full membership.";
 		} else if (payload.cprMemberStatus === "missing_cpr") {
@@ -3770,7 +3800,7 @@
 			return;
 		}
 
-		syncQueueLocks();
+		syncNativeRoleStates();
 		syncInteractiveState();
 		let panel = document.getElementById(PANEL_ID);
 		const mount = getInlineMount();
@@ -3851,7 +3881,7 @@
 						<tr><th>Local</th><td>API key and cached recommendation.</td></tr>
 						<tr><th>Key</th><td>Sent only to Torn for profile lookup.</td></tr>
 						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
-						<tr><th>Actions</th><td>Shows recommendations and pauses Join for long queues. It never submits a join.</td></tr>
+						<tr><th>Actions</th><td>Shows recommendations and blocks Join for long queues or out-of-range CPR in CPR mode. It never submits a join.</td></tr>
 					</table>
 					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
@@ -3862,7 +3892,6 @@
 			syncTargetFeedbackElement();
 			syncHighlightControls();
 			syncRecommendationJoinCues();
-			syncCprEligibilityHighlights();
 			return;
 		}
 		const focusedToggle = panel.querySelector(".ocp-title:focus, .ocp-collapse:focus");
@@ -3961,7 +3990,6 @@
 		});
 		window.setTimeout(() => {
 			syncRecommendationJoinCues();
-			syncCprEligibilityHighlights();
 		}, 0);
 	};
 
@@ -4019,7 +4047,6 @@
 			syncPageActivation();
 			if (state.active) {
 				syncRecommendationJoinCues();
-				syncCprEligibilityHighlights();
 			}
 		}, delay);
 	};
