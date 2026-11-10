@@ -18,10 +18,11 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 6 } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 7, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
+  if (clockTime) await page.clock.install({ time: clockTime });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, [], 'no browser exceptions'));
@@ -54,17 +55,19 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     window.testRequests = [];
     window.testPlannerRevisions = [];
     window.testProfileResponse = profile;
+    window.testPlannerSnapshot = plannerSnapshot;
     window.testReadMemberPayload = () => JSON.parse(cache.get('askeladds_oc_planner_member_payload') || 'null');
     window.GM_xmlhttpRequest = options => {
       const url = new URL(options.url);
       window.testCalls.push(url.pathname);
       window.testRequests.push({ path: url.pathname, method: options.method || 'GET', data: options.data || '' });
       if (url.pathname.endsWith('/bot-alerts')) window.testPlannerRevisions.push(url.searchParams.get('revision'));
+      const currentSnapshot = window.testPlannerSnapshot;
       const payload = options.url.includes('api.torn.com') ? window.testProfileResponse
-        : plannerSnapshot && url.pathname.endsWith('/bot-alerts')
-          ? url.searchParams.get('revision') === plannerSnapshot.revision
-            ? { notModified: true, revision: plannerSnapshot.revision, recommendationPolicy: plannerSnapshot.recommendationPolicy }
-            : plannerSnapshot
+        : currentSnapshot && url.pathname.endsWith('/bot-alerts')
+          ? url.searchParams.get('revision') === currentSnapshot.revision
+            ? { notModified: true, revision: currentSnapshot.revision, recommendationPolicy: currentSnapshot.recommendationPolicy }
+            : currentSnapshot
           : { notModified: saved, recommendationPolicy: { mode: cpr ? 'cpr' : 'plan' } };
       const respond = () => options.onload({ status: 200, responseHeaders: 'content-type: application/json', responseText: JSON.stringify(payload) });
       if (deferProfile && options.url.includes('api.torn.com')) window.testResolveProfile = respond;
@@ -306,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 6);
+  assert.equal(cached.schemaVersion, 7);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -412,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -423,6 +426,105 @@ for (const cacheSchemaVersion of [1, 2, 3, 4, 5]) {
     assert.equal(await page.evaluate(() => testCalls.length), 2, 'expanding still makes no requests');
   });
 }
+
+const queueTime = '2026-11-10T12:00:00Z';
+const queueNow = Date.parse(queueTime) / 1000;
+const queueHtml = fixture.replace(crime, `
+  <article data-crime-id="101"><h3>Test OC</h3>
+    <div class="slot-wrapper"><div class="slotHeader"><span class="title">Muscle #1</span></div>
+      <button id="earlier" disabled>Join</button></div>
+    <div class="slot-wrapper"><div class="slotHeader"><span class="title">Muscle #2</span></div>
+      <button class="native-join"><span>Join</span></button><button id="leave">Leave</button></div>
+  </article>
+  <article data-crime-id="102"><h3>Test OC</h3>
+    <div class="slot"><span class="title">Muscle #2</span><button id="other-crime">Join</button></div>
+  </article>`);
+
+function queueSnapshot(mode) {
+  const filled = (position, currentUserId, currentProgress) => ({ position, currentUserId, currentProgress });
+  const planned = (position, memberId, startHours) => ({
+    position, recommended: { memberId, cpr: 80 }, plannedStartAt: queueNow + startHours * 3600,
+  });
+  const slots = mode === 'plan'
+    ? [filled('Driver', 77, 50), planned('Muscle #1', 88, 12), planned('Hacker', 99, 36), planned('Muscle #2', 123, 60)]
+    : [filled('Driver', 77, 0.9999), filled('Hacker', 88, 0), filled('Looter', 99, 0),
+      { position: 'Muscle #2', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 }];
+  return {
+    revision: 'queue-' + mode, recommendationPolicy: { mode },
+    planner: {
+      id: 'queue-run', generatedAt: queueTime, snapshotKind: mode,
+      crimes: [{ id: 101, status: 'Recruiting', name: 'Test OC', slots }],
+      members: [{ memberId: 123, crimes: { 'Test OC': { 'Muscle #2': 80 } } }],
+    },
+  };
+}
+
+test('full plan disables only the exact Join with over 48h ahead, and restores it after a fresh plan', async t => {
+  const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: queueSnapshot('plan'), clockTime: queueTime });
+  const join = page.locator('.native-join');
+  await page.getByText('Queue full · over 48h of planning ahead', { exact: true }).waitFor();
+  assert.equal(await join.isDisabled(), true);
+  assert.equal(await page.locator('#leave').isEnabled(), true);
+  assert.equal(await page.locator('#other-crime').isEnabled(), true);
+  assert.equal(await page.locator('#earlier').isDisabled(), true);
+  await join.locator('span').dispatchEvent('click');
+  await join.evaluate(button => button.click());
+  await join.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => nativeJoins), 0);
+
+  await page.evaluate(() => {
+    const snapshot = testPlannerSnapshot;
+    snapshot.revision = 'exactly-48';
+    snapshot.planner.crimes[0].slots[0].currentProgress = 100;
+    testMenu['OC Planner: refresh']();
+  });
+  await page.getByText('Queue full · over 48h of planning ahead', { exact: true }).waitFor({ state: 'detached' });
+  assert.equal(await join.isEnabled(), true);
+  assert.equal(await page.locator('#earlier').isDisabled(), true);
+  await join.click();
+  assert.equal(await page.evaluate(() => nativeJoins), 1);
+});
+
+test('CPR mode restores Join at 48h without a request and follows replaced role controls', async t => {
+  const page = await open(t, { saved: true, cpr: true, html: queueHtml, width: 375, plannerSnapshot: queueSnapshot('cpr'), clockTime: queueTime });
+  const lock = page.locator('[data-ocp-queue-locked]');
+  await lock.waitFor();
+  assert.equal(await page.locator('.askeladds-oc-planner-role-cpr-eligible').count(), 0);
+  await page.evaluate(() => {
+    const old = document.querySelector('.native-join');
+    const replacement = document.createElement('button');
+    replacement.className = old.className;
+    replacement.textContent = 'Join';
+    replacement.addEventListener('click', () => { window.nativeJoins++; });
+    old.replaceWith(replacement);
+    replacement.click();
+  });
+  assert.equal(await page.evaluate(() => nativeJoins), 0, 'a tap before the observer runs is blocked');
+  await lock.waitFor();
+  assert.equal(await page.locator('.ocp-queue-reason').count(), 1);
+  const requestCount = await page.evaluate(() => testCalls.length);
+  await page.clock.fastForward(9_000);
+  await lock.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.native-join').isEnabled(), true);
+  await page.locator('.native-join').click();
+  assert.equal(await page.evaluate(() => nativeJoins), 1);
+  assert.equal(await page.locator('.askeladds-oc-planner-role-cpr-eligible').count(), 1);
+  assert.equal(await page.evaluate(() => testCalls.length), requestCount);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+});
+
+test('leaving the OC page removes its queue lock and preserves Torn’s disabled state', async t => {
+  const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: queueSnapshot('plan'), clockTime: queueTime });
+  const join = page.locator('.native-join');
+  await page.locator('[data-ocp-queue-locked]').waitFor();
+  await join.evaluate(button => { button.disabled = true; });
+  await page.evaluate(() => { location.hash = '/tab=members'; });
+  await page.locator('[data-ocp-queue-locked]').waitFor({ state: 'detached' });
+  assert.equal(await join.isDisabled(), true);
+  assert.equal(await join.getAttribute('aria-disabled'), null);
+  assert.equal(await page.locator('.ocp-queue-reason').count(), 0);
+});
 
 for (const status of ['ready', 'missing', 'refreshing']) {
   test(`CPR mode records installed version and last use with a ${status} snapshot, independently of a complete plan`, async t => {

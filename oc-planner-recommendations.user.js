@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.70
+// @version      0.2.71
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,12 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.70";
-	const PAYLOAD_CACHE_VERSION = 6;
+	const SCRIPT_VERSION = "0.2.71";
+	const PAYLOAD_CACHE_VERSION = 7;
+	const PLANNING_TURN_SECONDS = 24 * 3600;
+	const PLANNING_QUEUE_LIMIT_SECONDS = 48 * 3600;
+	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
+	const QUEUE_LOCK_REASON = "Queue full · over 48h of planning ahead";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -119,8 +123,24 @@
 	};
 
 	let lastRenderedMarkup = "";
+	const queueLockedControls = new Map();
+	let queueUnlockTimer;
 
 	addStyle(`
+		[${QUEUE_LOCK_ATTRIBUTE}] {
+			opacity: .55;
+			cursor: not-allowed;
+		}
+		.ocp-queue-reason {
+			display: block;
+			flex-basis: 100%;
+			grid-column: 1 / -1;
+			margin: 3px 0;
+			color: #f09c9c;
+			font-size: 11px;
+			line-height: 1.25;
+			overflow-wrap: anywhere;
+		}
 		#${PANEL_ID} {
 			box-sizing: border-box;
 			position: relative;
@@ -1436,6 +1456,7 @@
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
 		clearCprEligibilityHighlights();
+		clearQueueLocks();
 		lastRenderedMarkup = "";
 		state.pendingHighlight = null;
 		state.targetFeedback = null;
@@ -1574,7 +1595,7 @@
 	const getRoleTitleText = (element) =>
 			normalizeRoleName(element?.querySelector?.("[class*='title']")?.textContent || element?.textContent);
 
-	const findExactRoleTitleElement = (scope, recommendation) => {
+	const findExactRoleTitleElement = (scope, recommendation, strict = false) => {
 		const roleTerms = getRoleTerms(recommendation);
 		if (!roleTerms.length) return null;
 		const root = scope || document;
@@ -1592,6 +1613,14 @@
 				seenWrappers.add(entry.wrapper);
 				return true;
 			});
+
+		if (strict) {
+			const exact = entries.filter(entry =>
+				entry.text === normalizeRoleName(recommendation.position || recommendation.role) &&
+				isVisibleElement(entry.wrapper) && getComputedStyle(entry.wrapper).visibility === "visible"
+			);
+			return exact.length === 1 ? exact[0].wrapper : null;
+		}
 
 		const positionHint = getPositionRoleHint(recommendation);
 		if (positionHint) {
@@ -1851,7 +1880,7 @@
 		}
 
 		const eligibleSlots = (payload.cprEligibleSlots || []).filter(
-			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot))
+			(slot) => !state.takenRecommendationKeys.has(getRecommendationKey(slot)) && !getQueueLock(slot)
 		);
 		const desiredElements = new Set();
 		for (const slots of groupCprSlotsByCrime(eligibleSlots)) {
@@ -1888,6 +1917,7 @@
 		const recommendation = recommendations[index];
 		if (!recommendation) return "";
 		const role = recommendation.position || recommendation.role || "assigned role";
+		if (getQueueLock(recommendation)) return `${role} · Queue full`;
 		const prefix = `Join as ${role}`;
 		if (index === 0) {
 			if (recommendation.currentCrimeName) {
@@ -1910,6 +1940,112 @@
 		`${String(recommendation?.crimeId || "")}|${normalizeText(
 			recommendation?.position || recommendation?.role
 		)}`;
+
+	const queueRoleKey = (slot) => `${slot?.crimeId}|${normalizeRoleName(slot?.position || slot?.role)}`;
+
+	const getQueueLock = (slot) => {
+		const lock = state.lastPayload?.queueLocks?.[queueRoleKey(slot)];
+		return lock?.unlockAt > Math.floor(Date.now() / 1000) ? lock : null;
+	};
+
+	const isJoinControl = (button) =>
+		[button.getAttribute("aria-label"), button.textContent].some(label => normalizeText(label) === "join");
+
+	const findQueueJoinControl = (slot, crime) => {
+		if (!isVisibleElement(crime)) return null;
+
+		// The title can live inside a header separate from its Join button. Never
+		// climb into a container shared by two roles, or guess a numbered position.
+		for (let scope = findExactRoleTitleElement(crime, slot, true); scope && scope !== crime; scope = scope.parentElement) {
+			const titles = [...scope.querySelectorAll(ROLE_TITLE_SELECTOR)];
+			const leaves = titles.filter(title => !title.querySelector(ROLE_TITLE_SELECTOR));
+			if (leaves.length > 1) return null;
+			const controls = [...scope.querySelectorAll("button, [role='button']")].filter(button =>
+				!isInsidePanel(button) && isVisibleElement(button) && getComputedStyle(button).visibility === "visible" &&
+				isJoinControl(button)
+			);
+			if (!controls.length) continue;
+			return controls.length === 1 && !getRoleOccupant(scope, false) ? controls[0] : null;
+		}
+		return null;
+	};
+
+	const removeQueueLock = (button, binding) => {
+		button.removeAttribute(QUEUE_LOCK_ATTRIBUTE);
+		if (binding.previousAriaDisabled !== "true" && button.getAttribute("aria-disabled") === "true") {
+			if (binding.previousAriaDisabled === null) button.removeAttribute("aria-disabled");
+			else button.setAttribute("aria-disabled", binding.previousAriaDisabled);
+		}
+		binding.reason.remove();
+		queueLockedControls.delete(button);
+	};
+
+	const clearQueueLocks = () => {
+		window.clearTimeout(queueUnlockTimer);
+		queueUnlockTimer = undefined;
+		for (const [button, binding] of queueLockedControls) removeQueueLock(button, binding);
+	};
+
+	const syncQueueLocks = () => {
+		if (document.visibilityState === "hidden") return;
+		window.clearTimeout(queueUnlockTimer);
+		queueUnlockTimer = undefined;
+		const now = Math.floor(Date.now() / 1000);
+		const desired = new Map();
+		const activeCrimeId = getCurrentPageCrimeId();
+		const crimeElements = new Map();
+		let nextUnlock = Infinity;
+		for (const slot of Object.values(state.lastPayload?.queueLocks || {})) {
+			if (!(slot.unlockAt > now)) continue;
+			nextUnlock = Math.min(nextUnlock, slot.unlockAt);
+			const id = String(slot.crimeId);
+			if (activeCrimeId && activeCrimeId !== id) continue;
+			const crime = crimeElements.get(id) || findCrimeElement(id, slot, false);
+			if (!crime) continue;
+			crimeElements.set(id, crime);
+			const control = findQueueJoinControl(slot, crime);
+			if (control) desired.set(control, slot);
+		}
+
+		for (const [button, binding] of queueLockedControls) {
+			if (desired.get(button) !== binding.slot || !binding.reason.isConnected) removeQueueLock(button, binding);
+		}
+		for (const [button, slot] of desired) {
+			if (queueLockedControls.has(button)) continue;
+			const reason = document.createElement("span");
+			reason.className = "ocp-queue-reason";
+			reason.textContent = QUEUE_LOCK_REASON;
+			const previousAriaDisabled = button.getAttribute("aria-disabled");
+			button.setAttribute("aria-disabled", "true");
+			button.setAttribute(QUEUE_LOCK_ATTRIBUTE, "");
+			button.after(reason);
+			queueLockedControls.set(button, { slot, reason, previousAriaDisabled });
+		}
+		if (Number.isFinite(nextUnlock)) {
+			queueUnlockTimer = window.setTimeout(render, Math.min(nextUnlock * 1000 - Date.now() + 1, 2_147_483_647));
+		}
+	};
+
+	// Keep Torn's native disabled property under its own control. A captured
+	// click also covers keyboard activation and role="button" controls.
+	window.addEventListener("click", (event) => {
+		if (!state.active || !isOcCrimesPage() || document.visibilityState === "hidden") return;
+		const button = event.target?.closest?.("button, [role='button']");
+		if (!button || !isJoinControl(button) || isInsidePanel(button)) return;
+		// Torn can replace a role between observer runs. Check a newly inserted
+		// Join against the current snapshot before it has an inline marker.
+		const nearbyId = button.closest("[data-crime-id], [data-crimeid], [data-oc-id]");
+		const crimeId = nearbyId ? getElementCrimeId(nearbyId) : getCurrentPageCrimeId();
+		const candidates = Object.values(state.lastPayload?.queueLocks || {});
+		const locked = candidates.some(slot => {
+			if ((crimeId && crimeId !== String(slot.crimeId)) || !getQueueLock(slot)) return false;
+			const crime = findCrimeElement(slot.crimeId, slot);
+			return findQueueJoinControl(slot, crime) === button;
+		});
+		if (!locked) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+	}, true);
 
 	const getHighlightRecommendations = (recommendation) =>
 		Array.isArray(recommendation?.eligibleRoles)
@@ -1961,6 +2097,9 @@
 					? `Filled by ${availability.occupant.name}`
 					: "Filled by another player",
 			};
+		}
+		if (getQueueLock(recommendation)) {
+			return { kind: "missing", label: `Queue full: ${role}`, status: QUEUE_LOCK_REASON };
 		}
 
 		const isHighlightedTarget =
@@ -2219,9 +2358,9 @@
 		window.setTimeout(() => render(), 0);
 	};
 
-	const getRoleOccupant = (roleElement) => {
+	const getRoleOccupant = (roleElement, expandScope = true) => {
 		if (!roleElement) return null;
-		const roleScope = roleElement.closest?.("[class*='wrapper'], [class*='Wrapper']") || roleElement;
+		const roleScope = (expandScope && roleElement.closest?.("[class*='wrapper'], [class*='Wrapper']")) || roleElement;
 		const selector =
 			"a[href*='profiles.php'], a[href*='XID='], [class*='userName'], [class*='UserName'], [class*='username'], [class*='memberName'], [class*='MemberName'], [class*='playerName']";
 		const element = roleScope.querySelector(selector);
@@ -2812,6 +2951,76 @@
 		cprSnapshotError: String(recommendationPolicy.cprSnapshotError || ""),
 	});
 
+	// Keep this queue calculation aligned with the website's ocPlanningQueue.
+	const getJoinedPlanningDoneAt = (crime, snapshotUnix, fractionalProgress) => {
+		if (!snapshotUnix) return crime.currentPlanningDoneAt;
+		const progress = (crime.slots || []).flatMap(slot => {
+			const raw = slot?.currentProgress;
+			if (!slot?.currentUserId || typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return [];
+			const percent = fractionalProgress && raw <= 1 ? raw * 100 : raw;
+			return percent <= 100 ? [percent] : [];
+		});
+		if (!progress.length) return crime.currentPlanningDoneAt;
+		const incomplete = progress.filter(percent => percent < 100);
+		if (!incomplete.length) return undefined;
+		return Math.floor(snapshotUnix + (incomplete.length - Math.max(...incomplete) / 100) * PLANNING_TURN_SECONDS);
+	};
+
+	const getQueueUnlockAt = (crime, target, now, joinedDoneAt, includeScheduledTurns) => {
+		const counted = [];
+		let countedUntil = Math.max(now, joinedDoneAt || now);
+		if (countedUntil > now) counted.push({ start: now, end: countedUntil });
+		if (includeScheduledTurns) {
+			const targetStart = (target.recommended && target.plannedStartAt) || Infinity;
+			const joinedIds = new Set(crime.slots.map(slot => slot.currentUserId).filter(Boolean));
+			const scheduled = crime.slots.flatMap(slot => {
+				const start = slot.plannedStartAt;
+				const member = slot.recommended;
+				if (slot.position === target.position || slot.currentUserId || !member?.memberId || member.anyFree ||
+					joinedIds.has(member.memberId) || !start || !Number.isFinite(start) || start >= targetStart) return [];
+				return [{ start, end: slot.plannedMemberEndAt || start + PLANNING_TURN_SECONDS }];
+			}).sort((a, b) => a.start - b.start);
+
+			for (const turn of scheduled) {
+				const start = Math.max(countedUntil, turn.start);
+				const end = Math.min(targetStart, turn.end);
+				if (end <= start) continue;
+				counted.push({ start, end });
+				countedUntil = end;
+			}
+		}
+		let excess = counted.reduce((total, turn) => total + turn.end - turn.start, 0) - PLANNING_QUEUE_LIMIT_SECONDS;
+		if (excess <= 0) return 0;
+		for (const turn of counted) {
+			const duration = turn.end - turn.start;
+			if (excess <= duration) return Math.ceil(turn.start + excess);
+			excess -= duration;
+		}
+		return 0;
+	};
+
+	const buildQueueLocks = (planner, mode) => {
+		const now = Math.floor(Date.now() / 1000);
+		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
+		const fractionalProgress = planner.snapshotKind ? planner.snapshotKind === "cpr" : mode === "cpr";
+		const locks = {};
+		for (const crime of planner.crimes || []) {
+			if (normalizeText(crime.status) !== "recruiting" || !/^\d+$/.test(String(crime.id || ""))) continue;
+			const joinedDoneAt = getJoinedPlanningDoneAt(crime, snapshotUnix, fractionalProgress);
+			for (const slot of crime.slots || []) {
+				if (slot.currentUserId || slot.currentUserName) continue;
+				const position = slot.position || slot.role;
+				if (!position) continue;
+				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, mode === "plan");
+				if (unlockAt) {
+					const target = { crimeId: crime.id, position, unlockAt };
+					locks[queueRoleKey(target)] = target;
+				}
+			}
+		}
+		return locks;
+	};
+
 	const buildMemberPayload = (profile, planner, recommendationPolicy = {}) => {
 		const { memberId, memberName } = getProfileMemberIdentity(profile);
 		const recommendationMode = recommendationPolicy.mode === "cpr" ? "cpr" : "plan";
@@ -2853,6 +3062,7 @@
 			plannerRunId: planner?.id,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
+			queueLocks: buildQueueLocks(planner, recommendationMode),
 			recommendations,
 			hasAssignedRole: recommendations.length > 0,
 			planningSteps,
@@ -3111,6 +3321,7 @@
 
 	const resumeVisibleRefresh = () => {
 		if (document.visibilityState !== "visible") return;
+		if (state.active && isOcCrimesPage()) render();
 		if (
 			state.active &&
 			isOcCrimesPage() &&
@@ -3158,6 +3369,7 @@
 		if (recommendation?.availableAt && recommendation.availableAt > Math.floor(Date.now() / 1000)) {
 			return "Wait until free";
 		}
+		if (getQueueLock(recommendation)) return "Wait for the planning queue";
 		return "Ready now";
 	};
 
@@ -3174,6 +3386,7 @@
 	const recommendationCard = (recommendation, index) => {
 		const crimeUrl = getCrimeUrl(recommendation.crimeId);
 		const timelineLabel = index === 0 ? "Next" : "Then";
+		const action = getQueueLock(recommendation) ? "Queue full ·" : "Join";
 		const startLabel =
 			recommendation.plannedStartAt && recommendation.plannedStartAt > Math.floor(Date.now() / 1000)
 				? `${formatRelative(recommendation.plannedStartAt)} (${formatTimestamp(recommendation.plannedStartAt)})`
@@ -3236,7 +3449,7 @@
 			<div class="ocp-card plan next">
 				<a class="ocp-plan-box next ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(recommendation.crimeId)}" data-ocp-crime-name="${escapeHtml(recommendation.crimeName || "")}" data-ocp-role="${escapeHtml(recommendation.role || "")}" data-ocp-position="${escapeHtml(recommendation.position || "")}" data-ocp-role-impact="${escapeHtml(recommendation.roleImpactLabel || "")}">
 					<span class="ocp-next-head">
-						<span class="ocp-next-main"><strong>${timelineLabel}:</strong> Join ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
+						<span class="ocp-next-main"><strong>${timelineLabel}:</strong> ${action} ${escapeHtml(compactCrimeLabel(recommendation.crimeName, recommendation.crimeId))} / ${escapeHtml(recommendation.position || recommendation.role || "Slot")}</span>
 						${nextMeta ? `<span class="ocp-next-meta">${escapeHtml(nextMeta)}</span>` : ""}
 					</span>
 					${miniMeta ? `<span class="ocp-mini-meta">${miniMeta}</span>` : ""}
@@ -3265,7 +3478,7 @@
 				<div class="ocp-card-heading">
 					<span>${escapeHtml(compactCrimeLabel(slot.crimeName, slot.crimeId))}</span>
 					<span class="ocp-muted">${escapeHtml(slot.position || slot.role || "Slot")}</span>
-					${cprMode ? `<span class="ocp-pill">CPR eligible</span>` : ""}
+					${getQueueLock(slot) ? '<span class="ocp-pill">Queue full</span>' : cprMode ? `<span class="ocp-pill">CPR eligible</span>` : ""}
 				</div>
 				${meta ? `<div class="ocp-mini-meta">${meta}</div>` : ""}
 				<a class="ocp-card-link" href="${escapeHtml(crimeUrl)}" data-ocp-crime-id="${escapeHtml(slot.crimeId)}" data-ocp-crime-name="${escapeHtml(slot.crimeName || "")}" data-ocp-role="${escapeHtml(slot.role || "")}" data-ocp-position="${escapeHtml(slot.position || "")}" data-ocp-role-impact="${escapeHtml(slot.roleImpactLabel || "")}">${escapeHtml(linkLabel)}</a>
@@ -3283,7 +3496,8 @@
 				const role = slot.position || slot.role || "Slot";
 				const cpr = getCprNumber(slot.cpr) !== undefined ? `${Math.round(Number(slot.cpr))}%` : "CPR ?";
 				const requirement = slot.cprBand ? `Needs ${slot.cprBand}` : "Within limits";
-				return `<span class="ocp-cpr-role-chip" title="${escapeHtml(`${role}: ${cpr}. ${requirement}`)}"><span>${escapeHtml(role)}</span><strong>${escapeHtml(cpr)}</strong>${slot.cprBand ? `<span class="ocp-cpr-role-requirement">needs ${escapeHtml(slot.cprBand)}</span>` : ""}</span>`;
+				const queue = getQueueLock(slot) ? '<span class="ocp-cpr-role-requirement">Queue full</span>' : "";
+				return `<span class="ocp-cpr-role-chip" title="${escapeHtml(`${role}: ${cpr}. ${requirement}`)}"><span>${escapeHtml(role)}</span><strong>${escapeHtml(cpr)}</strong>${slot.cprBand ? `<span class="ocp-cpr-role-requirement">needs ${escapeHtml(slot.cprBand)}</span>` : ""}${queue}</span>`;
 			})
 			.join("");
 		const meta = [
@@ -3357,7 +3571,9 @@
 		const openSlotCount = Number(payload.cprOpenSlotCount || 0);
 		let rule = "No open eligible roles.";
 		if (roleCount) {
-			rule = "Green roles are open and within your CPR limits.";
+			rule = eligibleSlots.some(getQueueLock)
+				? "Queue full roles meet CPR limits and reopen at 48h of planning ahead."
+				: "Green roles are open and within your CPR limits.";
 		} else if (payload.cprMemberStatus === "not_full_member") {
 			rule = "Recruit status: roles appear after full membership.";
 		} else if (payload.cprMemberStatus === "missing_cpr") {
@@ -3554,6 +3770,7 @@
 			return;
 		}
 
+		syncQueueLocks();
 		syncInteractiveState();
 		let panel = document.getElementById(PANEL_ID);
 		const mount = getInlineMount();
@@ -3634,7 +3851,7 @@
 						<tr><th>Local</th><td>API key and cached recommendation.</td></tr>
 						<tr><th>Key</th><td>Sent only to Torn for profile lookup.</td></tr>
 						<tr><th>Backend</th><td>Planner data and script check-in; never your key.</td></tr>
-						<tr><th>Actions</th><td>Display only. No joins or submissions.</td></tr>
+						<tr><th>Actions</th><td>Shows recommendations and pauses Join for long queues. It never submits a join.</td></tr>
 					</table>
 					${savedKey ? `<div class="ocp-privacy-actions"><button class="ocp-button ocp-copy-diagnostics">Copy diagnostics</button><button class="ocp-button danger ocp-forget">Change key</button></div>` : ""}
 				</details>
