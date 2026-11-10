@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 9, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 10, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 9);
+  assert.equal(cached.schemaVersion, 10);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -559,6 +559,41 @@ test('unreadable native progress falls back to the saved queue instead of guessi
   const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
   await page.locator('[data-oc-id="102"] [data-ocp-queue-locked]').waitFor({ timeout: 5000 });
   assert.equal(await page.locator('[data-oc-id="101"] [data-fixture-role="Muscle #2"] button').isEnabled(), true);
+});
+
+test('the faction queue limit applies to both native and saved work and can be disabled without lifting CPR rules', async t => {
+  const roles = planningDegrees => [
+    nativeRole('Driver', 75, { occupant: 77, planningDegrees }),
+    nativeRole('Lookout', 75, { occupant: 88, planningDegrees: 0 }),
+    nativeRole('Hacker', 80),
+    nativeRole('Muscle #2', 80),
+  ];
+  const html = fixture.replace(crime, nativeCrime(101, roles(180)) + nativeCrime(102, roles(undefined)));
+  const slots = [occupiedQueueSlot('Driver', 77, 0.5), occupiedQueueSlot('Lookout', 88, 0),
+    { position: 'Hacker', minimumRecommendedCpr: 0, maximumRecommendedCpr: 60 }, targetQueueSlot];
+  const snapshot = liveQueueSnapshot('cpr', [{ id: 101, slots }, { id: 102, slots }]);
+  snapshot.recommendationPolicy.planningQueueLimitHours = 24;
+  snapshot.planner.members[0].crimes['Test OC'].Hacker = 80;
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  const joins = page.locator('[data-fixture-role="Muscle #2"] button');
+  const queueLabels = page.getByText('Queue full · over 24h of planning ahead', { exact: true });
+  await queueLabels.last().waitFor();
+  assert.equal(await queueLabels.count(), 4);
+  assert.equal(await joins.first().isDisabled(), true);
+  assert.equal(await joins.last().isDisabled(), true);
+  const tornCalls = await page.evaluate(() => testCalls.filter(path => path === '/user/').length);
+
+  await page.evaluate(() => {
+    testPlannerSnapshot.revision = 'queue-limit-disabled';
+    testPlannerSnapshot.recommendationPolicy.planningQueueLimitHours = 0;
+  });
+  await page.clock.fastForward(5 * 60 * 1000 + 500);
+  await page.waitForFunction(() => testReadMemberPayload()?.payload?.planningQueueLimitHours === 0);
+  await queueLabels.first().waitFor({ state: 'detached' });
+  assert.equal(await joins.first().isEnabled(), true);
+  assert.equal(await joins.last().isEnabled(), true);
+  assert.equal(await page.locator('[data-ocp-cpr-locked]').count(), 2);
+  assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), tornCalls);
 });
 
 test('the live full-plan queue counts a scheduled member only once after they join another role', async t => {

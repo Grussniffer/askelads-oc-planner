@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.73
+// @version      0.2.74
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,13 +25,13 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.73";
-	const PAYLOAD_CACHE_VERSION = 9;
+	const SCRIPT_VERSION = "0.2.74";
+	const PAYLOAD_CACHE_VERSION = 10;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
-	const PLANNING_QUEUE_LIMIT_SECONDS = 48 * 3600;
+	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
+	const MAX_PLANNING_QUEUE_LIMIT_HOURS = 240;
 	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
 	const CPR_LOCK_ATTRIBUTE = "data-ocp-cpr-locked";
-	const QUEUE_LOCK_REASON = "Queue full · over 48h of planning ahead";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -1188,6 +1188,7 @@
 					: snapshotAvailable ? "ready" : "missing",
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
+					planningQueueLimitHours: recommendationPolicy.planningQueueLimitHours,
 					plannerGenerationEnabled: recommendationPolicy.plannerGenerationEnabled !== false,
 					plannerRefreshRequired,
 					updatedAt: recommendationPolicy.updatedAt || null,
@@ -1935,6 +1936,13 @@
 
 	const queueRoleKey = (slot) => `${slot?.crimeId}|${normalizeRoleName(slot?.position || slot?.role)}`;
 
+	const normalizePlanningQueueLimitHours = (hours) =>
+		Number.isInteger(hours) && hours >= 0 && hours <= MAX_PLANNING_QUEUE_LIMIT_HOURS
+			? hours : DEFAULT_PLANNING_QUEUE_LIMIT_HOURS;
+
+	const queueLockReason = () =>
+		`Queue full · over ${normalizePlanningQueueLimitHours(state.lastPayload?.planningQueueLimitHours)}h of planning ahead`;
+
 	const getQueueLock = (slot) => {
 		const lock = effectiveQueueLocks.get(queueRoleKey(slot));
 		return lock?.unlockAt > Math.floor(Date.now() / 1000) ? lock : null;
@@ -1982,7 +1990,7 @@
 		}
 		for (const slot of effectiveQueueLocks.values()) {
 			if (getQueueLock(slot)) {
-				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: QUEUE_LOCK_REASON });
+				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: queueLockReason() });
 			}
 		}
 		return states;
@@ -2133,7 +2141,7 @@
 			};
 		}
 		if (getQueueLock(recommendation)) {
-			return { kind: "missing", label: `Queue full: ${role}`, status: QUEUE_LOCK_REASON };
+			return { kind: "missing", label: `Queue full: ${role}`, status: queueLockReason() };
 		}
 
 		const isHighlightedTarget =
@@ -2982,6 +2990,7 @@
 	};
 
 	const getRecommendationPolicyStatus = (recommendationPolicy = {}) => ({
+		planningQueueLimitHours: normalizePlanningQueueLimitHours(recommendationPolicy.planningQueueLimitHours),
 		runtimeStatus: String(recommendationPolicy.runtimeStatus || ""),
 		runtimeMessage: String(recommendationPolicy.runtimeMessage || ""),
 		runtimeError: String(recommendationPolicy.runtimeError || ""),
@@ -3012,7 +3021,7 @@
 		return remaining ? Math.floor(snapshotUnix + remaining) : undefined;
 	};
 
-	const getQueueUnlockAt = (crime, target, now, joinedDoneAt, includeScheduledTurns) => {
+	const getQueueUnlockAt = (crime, target, now, joinedDoneAt, includeScheduledTurns, limitHours) => {
 		const counted = [];
 		let countedUntil = Math.max(now, joinedDoneAt || now);
 		if (countedUntil > now) counted.push({ start: now, end: countedUntil });
@@ -3035,7 +3044,7 @@
 				countedUntil = end;
 			}
 		}
-		let excess = counted.reduce((total, turn) => total + turn.end - turn.start, 0) - PLANNING_QUEUE_LIMIT_SECONDS;
+		let excess = counted.reduce((total, turn) => total + turn.end - turn.start, 0) - limitHours * 3600;
 		if (excess <= 0) return 0;
 		for (const turn of counted) {
 			const duration = turn.end - turn.start;
@@ -3109,8 +3118,9 @@
 
 	const refreshEffectiveQueueLocks = () => {
 		const payload = state.lastPayload;
-		effectiveQueueLocks = new Map(Object.entries(payload?.queueLocks || {}));
-		if (!payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
+		const limitHours = normalizePlanningQueueLimitHours(payload?.planningQueueLimitHours);
+		effectiveQueueLocks = new Map(limitHours ? Object.entries(payload?.queueLocks || {}) : []);
+		if (!limitHours || !payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
 
 		const activeId = getCurrentPageCrimeId();
 		const now = Math.floor(Date.now() / 1000);
@@ -3127,7 +3137,7 @@
 			}
 			for (const slot of queue.slots) {
 				if (!slot.open) continue;
-				const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, includeScheduledTurns);
+				const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, includeScheduledTurns, limitHours);
 				if (unlockAt) {
 					const target = { crimeId, position: slot.position, unlockAt };
 					effectiveQueueLocks.set(queueRoleKey(target), target);
@@ -3136,7 +3146,8 @@
 		}
 	};
 
-	const buildQueueLocks = (planner, mode) => {
+	const buildQueueLocks = (planner, mode, limitHours) => {
+		if (!limitHours) return {};
 		const now = Math.floor(Date.now() / 1000);
 		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
 		const fractionalProgress = planner.snapshotKind ? planner.snapshotKind === "cpr" : mode === "cpr";
@@ -3148,7 +3159,7 @@
 				if (slot.currentUserId || slot.currentUserName) continue;
 				const position = slot.position || slot.role;
 				if (!position) continue;
-				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, mode === "plan");
+				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, mode === "plan", limitHours);
 				if (unlockAt) {
 					const target = { crimeId: crime.id, position, unlockAt };
 					locks[queueRoleKey(target)] = target;
@@ -3175,6 +3186,7 @@
 	const buildMemberPayload = (profile, planner, recommendationPolicy = {}) => {
 		const { memberId, memberName } = getProfileMemberIdentity(profile);
 		const recommendationMode = recommendationPolicy.mode === "cpr" ? "cpr" : "plan";
+		const policyStatus = getRecommendationPolicyStatus(recommendationPolicy);
 		const cprRequirements = recommendationPolicy.cprRequirements || {};
 		const recommendations = recommendationMode === "plan"
 			? findSlotRecommendations(planner, memberId)
@@ -3209,11 +3221,11 @@
 			factionId: getPlannerFactionId(profile),
 			noPlan: false,
 			recommendationMode,
-			...getRecommendationPolicyStatus(recommendationPolicy),
+			...policyStatus,
 			plannerRunId: planner?.id,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
-			queueLocks: buildQueueLocks(planner, recommendationMode),
+			queueLocks: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueLimitHours),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			recommendations,
 			hasAssignedRole: recommendations.length > 0,
