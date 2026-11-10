@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.72
+// @version      0.2.73
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.72";
-	const PAYLOAD_CACHE_VERSION = 8;
+	const SCRIPT_VERSION = "0.2.73";
+	const PAYLOAD_CACHE_VERSION = 9;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const PLANNING_QUEUE_LIMIT_SECONDS = 48 * 3600;
 	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
@@ -129,6 +129,8 @@
 	let lastRenderedMarkup = "";
 	const lockedJoinControls = new Map();
 	const paintedRoles = new Map();
+	const visibleQueueObservations = new WeakMap();
+	let effectiveQueueLocks = new Map();
 	let queueUnlockTimer;
 
 	addStyle(`
@@ -1612,7 +1614,12 @@
 	};
 
 	const NATIVE_ROLE_HEADER = "[class*='slotHeader___'], [class*='SlotHeader___']";
+	const NATIVE_CRIME = "[data-oc-id]";
+	const NATIVE_ROLE_BODY = "[class*='slotBody___']";
+	const NATIVE_JOIN_CONTAINER = "[class*='joinContainer___']";
 	const NATIVE_JOIN_BUTTON = "button[class*='joinButton___']";
+	const NATIVE_PLANNING_CLOCK = "[class*='planning___']";
+	const NATIVE_PLANNING_PROGRESS = "[role='progressbar'], progress, [class*='planningProgress'], [class*='planningCircle'], [class*='progressCircle'], [aria-label*='planning' i]";
 
 	const getRoleCandidateWrapper = (element) =>
 		element?.closest(NATIVE_ROLE_HEADER)?.parentElement ||
@@ -1929,7 +1936,7 @@
 	const queueRoleKey = (slot) => `${slot?.crimeId}|${normalizeRoleName(slot?.position || slot?.role)}`;
 
 	const getQueueLock = (slot) => {
-		const lock = state.lastPayload?.queueLocks?.[queueRoleKey(slot)];
+		const lock = effectiveQueueLocks.get(queueRoleKey(slot));
 		return lock?.unlockAt > Math.floor(Date.now() / 1000) ? lock : null;
 	};
 
@@ -1962,7 +1969,7 @@
 	const getNativeRoleStates = () => {
 		const states = new Map();
 		const payload = state.lastPayload;
-		if (!payload || payload.noPlan) return states;
+		if (!payload) return states;
 		if (payload.recommendationMode === "cpr") {
 			for (const slot of payload.cprEligibleSlots || []) {
 				if (!state.takenRecommendationKeys.has(getRecommendationKey(slot))) {
@@ -1973,7 +1980,7 @@
 				states.set(queueRoleKey(slot), { slot, tone: CPR_BLOCKED_ROLE_CLASS, attribute: CPR_LOCK_ATTRIBUTE, reason: slot.reason });
 			}
 		}
-		for (const slot of Object.values(payload.queueLocks || {})) {
+		for (const slot of effectiveQueueLocks.values()) {
 			if (getQueueLock(slot)) {
 				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: QUEUE_LOCK_REASON });
 			}
@@ -1994,6 +2001,7 @@
 	const clearNativeRoleStates = () => {
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
+		effectiveQueueLocks.clear();
 		for (const [button, binding] of lockedJoinControls) removeJoinLock(button, binding);
 		for (const [role, tone] of paintedRoles) role.classList.remove(tone);
 		paintedRoles.clear();
@@ -2001,6 +2009,7 @@
 
 	const syncNativeRoleStates = () => {
 		if (document.visibilityState === "hidden") return;
+		refreshEffectiveQueueLocks();
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
 		const desiredRoles = new Map();
@@ -2057,6 +2066,7 @@
 		if (!state.active || !isOcCrimesPage() || document.visibilityState === "hidden") return;
 		const button = event.target?.closest?.("button, [role='button']");
 		if (!button || !isJoinControl(button) || isInsidePanel(button)) return;
+		refreshEffectiveQueueLocks();
 		// Torn can replace a role between observer runs. Check a newly inserted
 		// Join against the current snapshot before it has an inline marker.
 		const nearbyId = button.closest("[data-crime-id], [data-crimeid], [data-oc-id]");
@@ -2983,6 +2993,12 @@
 	});
 
 	// Keep this queue calculation aligned with the website's ocPlanningQueue.
+	const joinedPlanningSeconds = (progress) => {
+		const incomplete = progress.filter(percent => percent < 100);
+		if (!incomplete.length) return 0;
+		return (incomplete.length - Math.max(...incomplete) / 100) * PLANNING_TURN_SECONDS;
+	};
+
 	const getJoinedPlanningDoneAt = (crime, snapshotUnix, fractionalProgress) => {
 		if (!snapshotUnix) return crime.currentPlanningDoneAt;
 		const progress = (crime.slots || []).flatMap(slot => {
@@ -2992,9 +3008,8 @@
 			return percent <= 100 ? [percent] : [];
 		});
 		if (!progress.length) return crime.currentPlanningDoneAt;
-		const incomplete = progress.filter(percent => percent < 100);
-		if (!incomplete.length) return undefined;
-		return Math.floor(snapshotUnix + (incomplete.length - Math.max(...incomplete) / 100) * PLANNING_TURN_SECONDS);
+		const remaining = joinedPlanningSeconds(progress);
+		return remaining ? Math.floor(snapshotUnix + remaining) : undefined;
 	};
 
 	const getQueueUnlockAt = (crime, target, now, joinedDoneAt, includeScheduledTurns) => {
@@ -3030,6 +3045,97 @@
 		return 0;
 	};
 
+	const readVisiblePlanningProgress = (header, body) => {
+		const style = header.querySelector(NATIVE_PLANNING_CLOCK)?.getAttribute("style") || "";
+		const angle = style.match(/--oc-clock-planning-bg\)\s*(\d+(?:\.\d+)?)deg/i);
+		if (angle && Number(angle[1]) <= 360) return Number(angle[1]) / 360 * 100;
+
+		for (const element of body.querySelectorAll(NATIVE_PLANNING_PROGRESS)) {
+			if (element.matches("progress[value]")) return getCprNumber(element.position * 100);
+			const value = element.getAttribute("aria-valuenow");
+			if (value?.trim()) {
+				const min = Number(element.getAttribute("aria-valuemin") ?? 0);
+				const max = Number(element.getAttribute("aria-valuemax") ?? 100);
+				const percent = getCprNumber((Number(value) - min) / (max - min) * 100);
+				if (max > min && percent !== undefined) return percent;
+			}
+			const explicit = getCprNumber(element.getAttribute("data-progress"));
+			if (explicit !== undefined) return explicit;
+			const percent = element.getAttribute("aria-label")?.match(/(\d+(?:\.\d+)?)\s*%/) ||
+				element.textContent?.trim().match(/^(\d+(?:\.\d+)?)\s*%$/);
+			const parsed = getCprNumber(percent?.[1]);
+			if (parsed !== undefined) return parsed;
+		}
+		return undefined;
+	};
+
+	const readVisibleQueue = (card, savedSlots, includeScheduledTurns, now) => {
+		const savedByPosition = new Map(savedSlots.map(slot => [normalizeRoleName(slot.position), slot]));
+		const hasScheduledTurns = includeScheduledTurns && savedSlots.some(slot => slot.recommended);
+		const visibleSlots = new Map();
+		for (const header of card.querySelectorAll(NATIVE_ROLE_HEADER)) {
+			if (header.closest(NATIVE_CRIME) !== card || !isVisibleElement(header)) continue;
+			const position = getRoleTitleText(header);
+			const body = header.parentElement.querySelector(`:scope > ${NATIVE_ROLE_BODY}`);
+			if (!position || !body || visibleSlots.has(position)) return null;
+			const open = !!body.querySelector(NATIVE_JOIN_CONTAINER);
+			const occupant = open ? null : getRoleOccupant(body, false);
+			const progress = open ? undefined : readVisiblePlanningProgress(header, body);
+			if (!open && (progress === undefined || (hasScheduledTurns && !occupant?.id))) return null;
+			visibleSlots.set(position, {
+				position, open, progress, occupant,
+				currentUserId: occupant?.id,
+			});
+		}
+		if (!visibleSlots.size || [...savedByPosition.keys()].some(position => !visibleSlots.has(position))) return null;
+
+		const lineup = [...visibleSlots.values()];
+		const signature = JSON.stringify(lineup.map(slot => [slot.position, slot.open, slot.currentUserId || slot.occupant?.name, slot.progress]));
+		let observed = visibleQueueObservations.get(card);
+		if (observed?.signature !== signature) {
+			const progress = lineup.filter(slot => !slot.open).map(slot => slot.progress);
+			observed = { signature, joinedDoneAt: Math.floor(now + joinedPlanningSeconds(progress)) };
+			visibleQueueObservations.set(card, observed);
+		}
+
+		const joinedIds = new Set(lineup.map(slot => slot.currentUserId).filter(Boolean));
+		const slots = lineup.map(slot => {
+			const saved = savedByPosition.get(slot.position);
+			const scheduled = slot.open && saved?.recommended && !joinedIds.has(saved.recommended.memberId);
+			return scheduled ? { ...saved, ...slot } : slot;
+		});
+		return { slots, joinedDoneAt: observed.joinedDoneAt };
+	};
+
+	const refreshEffectiveQueueLocks = () => {
+		const payload = state.lastPayload;
+		effectiveQueueLocks = new Map(Object.entries(payload?.queueLocks || {}));
+		if (!payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
+
+		const activeId = getCurrentPageCrimeId();
+		const now = Math.floor(Date.now() / 1000);
+		const includeScheduledTurns = payload.recommendationMode === "plan";
+		const seen = new Set();
+		for (const card of document.querySelectorAll(NATIVE_CRIME)) {
+			const crimeId = card.getAttribute("data-oc-id");
+			if (!/^\d+$/.test(crimeId) || (activeId && activeId !== crimeId) || seen.has(crimeId) || !isVisibleElement(card)) continue;
+			seen.add(crimeId);
+			const queue = readVisibleQueue(card, payload.queueSlotsByCrime?.[crimeId] || [], includeScheduledTurns, now);
+			if (!queue) continue;
+			for (const key of effectiveQueueLocks.keys()) {
+				if (key.startsWith(`${crimeId}|`)) effectiveQueueLocks.delete(key);
+			}
+			for (const slot of queue.slots) {
+				if (!slot.open) continue;
+				const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, includeScheduledTurns);
+				if (unlockAt) {
+					const target = { crimeId, position: slot.position, unlockAt };
+					effectiveQueueLocks.set(queueRoleKey(target), target);
+				}
+			}
+		}
+	};
+
 	const buildQueueLocks = (planner, mode) => {
 		const now = Math.floor(Date.now() / 1000);
 		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
@@ -3051,6 +3157,20 @@
 		}
 		return locks;
 	};
+
+	const getQueueSlotsByCrime = (planner, mode) => Object.fromEntries((planner.crimes || [])
+		.filter(crime => normalizeText(crime.status) === "recruiting" && /^\d+$/.test(String(crime.id || "")))
+		.map(crime => [String(crime.id), (crime.slots || []).flatMap(slot => {
+			const position = slot.position || slot.role;
+			if (!position) return [];
+			if (mode !== "plan" || slot.currentUserId || slot.currentUserName || !slot.recommended?.memberId) return [{ position }];
+			return [{
+				position,
+				recommended: { memberId: slot.recommended.memberId, anyFree: slot.recommended.anyFree },
+				plannedStartAt: slot.plannedStartAt,
+				plannedMemberEndAt: slot.plannedMemberEndAt,
+			}];
+		})]));
 
 	const buildMemberPayload = (profile, planner, recommendationPolicy = {}) => {
 		const { memberId, memberName } = getProfileMemberIdentity(profile);
@@ -3094,6 +3214,7 @@
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			queueLocks: buildQueueLocks(planner, recommendationMode),
+			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			recommendations,
 			hasAssignedRole: recommendations.length > 0,
 			planningSteps,
@@ -4054,14 +4175,26 @@
 	const startPageObserver = () => {
 		if (state.pageObserver || typeof MutationObserver !== "function" || !document.body) return;
 		state.pageObserver = new MutationObserver((mutations) => {
-			const relevant = mutations.some((mutation) =>
-				[...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesOcDom) ||
-				(!isInsidePanel(mutation.target) && mutation.target instanceof Element &&
-					!!mutation.target.closest(`${OC_ROOT_SELECTOR}, [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot']`))
-			);
+			const relevant = mutations.some((mutation) => {
+				const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+				if (mutation.type !== "childList") {
+					if (!target?.closest(NATIVE_CRIME)) return false;
+					return !!target.closest(`${NATIVE_PLANNING_CLOCK}, ${NATIVE_PLANNING_PROGRESS}`) ||
+						(mutation.attributeName === "href" && !!target.closest(NATIVE_ROLE_BODY)) ||
+						mutation.attributeName === "data-oc-id";
+				}
+				return [...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesOcDom) ||
+					(!isInsidePanel(target) && !!target?.closest(`${OC_ROOT_SELECTOR}, [data-crime-id], [data-crimeid], [data-oc-id], [class*='slot'], [class*='Slot']`));
+			});
 			if (relevant) queuePageDomSync();
 		});
-		state.pageObserver.observe(document.body, { childList: true, subtree: true });
+		state.pageObserver.observe(document.body, {
+			childList: true,
+			subtree: true,
+			characterData: true,
+			attributes: true,
+			attributeFilter: ["style", "aria-valuenow", "aria-valuemin", "aria-valuemax", "aria-label", "value", "max", "data-progress", "href", "data-oc-id"],
+		});
 	};
 
 	window.addEventListener("hashchange", () => {
@@ -4077,6 +4210,9 @@
 		window.setTimeout(() => retryPendingHighlight(), 1600);
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
+	window.addEventListener("focus", () => {
+		if (state.active && isOcCrimesPage()) render();
+	});
 	// pushState/replaceState do not emit hashchange. Torn can use either during tab navigation.
 	for (const method of ["pushState", "replaceState"]) {
 		const original = window.history[method];
