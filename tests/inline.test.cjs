@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 11, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 12, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 11);
+  assert.equal(cached.schemaVersion, 12);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -492,6 +492,119 @@ function liveQueueSnapshot(mode, crimes) {
 
 const targetQueueSlot = { position: 'Muscle #2', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };
 const occupiedQueueSlot = (position, currentUserId, currentProgress) => ({ position, currentUserId, currentProgress });
+
+for (const width of [1000, 375]) {
+  test(`green, yellow and red roles explain their status without blocking yellow (${width}px)`, async t => {
+    const joined = (count, firstProgress) => Array.from({ length: count }, (_, index) =>
+      occupiedQueueSlot(['Driver', 'Lookout', 'Hacker'][index], 77 + index, index ? 0 : firstProgress));
+    const joinedHtml = (count, firstDegrees) => Array.from({ length: count }, (_, index) =>
+      nativeRole(['Driver', 'Lookout', 'Hacker'][index], 70, { occupant: 77 + index, planningDegrees: index ? 0 : firstDegrees }));
+    const refused = { position: 'Robber', minimumRecommendedCpr: 85, maximumRecommendedCpr: 100 };
+    const disabled = { position: 'Safecracker', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };
+    const snapshot = liveQueueSnapshot('cpr', [
+      { id: 101, slots: [...joined(2, .5), targetQueueSlot, refused, disabled] },
+      { id: 102, slots: [...joined(1, 0), targetQueueSlot] },
+      { id: 103, slots: [...joined(3, 0), targetQueueSlot] },
+    ]);
+    Object.assign(snapshot.planner.members[0].crimes['Test OC'], { Robber: 80, Safecracker: 80 });
+    const html = `<style>
+      article{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px}
+      article>h3{flex-basis:100%;margin:2px 0 6px}
+      [data-fixture-role]{width:122px;flex:0 0 122px;overflow:hidden}
+      .slotHeader___c5,.slotBody___f8{padding:5px;box-sizing:border-box}
+      .slotHeader___c5{font-size:11px;font-weight:bold}
+      .slotBody___f8{font-size:12px;min-height:45px}
+      .slotBody___f8>.title___g9{display:none}
+      .joinContainer___h0{display:flex;align-items:center;gap:4px}
+      .joinContainer___h0>span{background:#151515;border:1px solid #777;border-radius:4px;padding:4px}
+      .joinButton___k2{background:linear-gradient(#141414,#343434);color:#eee;border:1px solid #777;border-radius:4px;padding:4px 10px}
+    </style>` + fixture.replace(crime,
+      nativeCrime(101, [...joinedHtml(2, 180), nativeRole('Muscle #2', 80), nativeRole('Robber', 80), nativeRole('Safecracker', 80, { disabled: true })]) +
+      nativeCrime(102, [...joinedHtml(1, 0), nativeRole('Muscle #2', 80)]) +
+      nativeCrime(103, [...joinedHtml(3, 0), nativeRole('Muscle #2', 80)]));
+    const page = await open(t, { saved: true, cpr: true, width, html, plannerSnapshot: snapshot, clockTime: queueTime });
+    const role = (id, position = 'Muscle #2') => page.locator(`[data-oc-id="${id}"] [data-fixture-role="${position}"]`);
+    await role(101).locator('.ocp-queue-warning-reason').waitFor();
+    assert.equal(await role(101).locator('.ocp-queue-warning-reason').innerText(), 'CPR 80% · >24h planning ahead');
+    assert.match(await role(101).getAttribute('class'), /role-queue-warning/);
+    assert.equal(await role(101).locator('button').isEnabled(), true);
+    assert.equal(await role(101).locator('button').getAttribute('aria-disabled'), null);
+    assert.equal(await role(102).locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 80%', 'exactly 24h remains green');
+    assert.match(await role(103).getAttribute('class'), /role-queue-full/);
+    assert.equal(await role(103).locator('button').isDisabled(), true);
+    assert.match(await role(101, 'Robber').getAttribute('class'), /role-cpr-blocked/);
+    assert.equal(await role(101, 'Robber').locator('button').isDisabled(), true, 'yellow never overrides CPR');
+    assert.equal(await role(101, 'Safecracker').locator('button').isDisabled(), true, 'Torn retains its own block');
+    const colors = await role(101).evaluate(el => getComputedStyle(el).backgroundColor.match(/\d+/g).map(Number));
+    assert.ok(colors[0] > colors[1] && colors[1] > colors[2], 'yellow has a distinct warm background');
+    const requests = await page.evaluate(() => testCalls.length);
+    await role(101).locator('button').evaluate(button => { button.addEventListener('click', () => { window.nativeJoins++; }); button.click(); });
+    assert.equal(await page.evaluate(() => nativeJoins), 1);
+    await page.waitForTimeout(200);
+    assert.equal(await role(101).locator('.ocp-queue-warning-reason').count(), 1, 'no repeated labels');
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: join(__dirname, `../test-results/role-colors-${width}.png`), fullPage: true });
+
+    const driver = role(101, 'Driver').locator('.planning___m3');
+    await driver.evaluate(el => el.style.background = 'conic-gradient(var(--oc-clock-planning-bg) 360deg, transparent 0)');
+    await role(101).locator('.ocp-eligible-reason').waitFor();
+    assert.equal(await role(101).locator('.ocp-queue-warning-reason').count(), 0, 'live progress clears yellow at 24h');
+    await driver.evaluate(el => el.style.background = 'conic-gradient(var(--oc-clock-planning-bg) 180deg, transparent 0)');
+    await role(101).locator('.ocp-queue-warning-reason').waitFor();
+    await role(101, 'Lookout').evaluate((el, replacement) => { el.outerHTML = replacement; }, nativeRole('Lookout', 70));
+    await role(101).locator('.ocp-eligible-reason').waitFor();
+    assert.equal(await page.evaluate(() => testCalls.length), requests, 'live progress and leaves make no requests');
+  });
+}
+
+test('yellow warning has its own configurable threshold and stays active with queue blocking off', async t => {
+  const slots = [occupiedQueueSlot('Driver', 77, .5), occupiedQueueSlot('Lookout', 88, 0), targetQueueSlot];
+  const snapshot = liveQueueSnapshot('cpr', [{ id: 101, slots }]);
+  snapshot.recommendationPolicy.planningQueueLimitHours = 0;
+  const html = fixture.replace(crime, nativeCrime(101, [
+    nativeRole('Driver', 70, { occupant: 77, planningDegrees: 180 }),
+    nativeRole('Lookout', 70, { occupant: 88, planningDegrees: 0 }), nativeRole('Muscle #2', 80),
+  ]));
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = page.locator('[data-fixture-role="Muscle #2"]');
+  await role.locator('.ocp-queue-warning-reason').waitFor();
+  for (const hours of [36, 12, 0]) {
+    await page.evaluate(hours => {
+      testPlannerSnapshot.revision = `warning-${hours}`;
+      testPlannerSnapshot.recommendationPolicy.planningQueueWarningHours = hours;
+      testMenu['OC Planner: refresh']();
+    }, hours);
+    await page.waitForFunction(hours => testReadMemberPayload()?.payload?.planningQueueWarningHours === hours, hours);
+    assert.equal(await role.locator('.ocp-queue-warning-reason').count(), hours === 12 ? 1 : 0);
+    assert.equal(await role.locator('button').isEnabled(), true);
+    if (hours === 12) assert.match(await role.innerText(), />12h planning ahead/);
+  }
+});
+
+test('saved yellow planning crosses the threshold locally and unreadable live progress preserves it', async t => {
+  const snapshot = queueSnapshot('cpr');
+  snapshot.planner.crimes[0].slots = [
+    occupiedQueueSlot('Driver', 77, .99997), occupiedQueueSlot('Lookout', 88, 0), targetQueueSlot,
+  ];
+  const page = await open(t, { saved: true, cpr: true, html: queueHtml, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = page.locator('[data-crime-id="101"] .slot-wrapper').last();
+  await role.locator('.ocp-queue-warning-reason').waitFor();
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.clock.fastForward(4_000);
+  await role.locator('.ocp-eligible-reason').waitFor();
+  assert.equal(await role.locator('button.native-join').isEnabled(), true);
+  assert.equal(await page.evaluate(() => testCalls.length), requests, 'crossing the boundary needs no refresh');
+});
+
+test('yellow counts joined planning rather than future recommendations in a complete plan', async t => {
+  const snapshot = queueSnapshot('plan');
+  snapshot.recommendationPolicy.planningQueueLimitHours = 0;
+  const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: snapshot, clockTime: queueTime });
+  await page.waitForFunction(() => testReadMemberPayload()?.payload?.plannerRunId === 'queue-run');
+  assert.equal(await page.locator('.ocp-queue-warning-reason').count(), 0, '12h joined planning stays below 24h despite future turns');
+  assert.equal(await page.locator('[data-ocp-queue-locked]').count(), 0);
+});
 
 test('visible Torn joins, progress-only updates, and leaves recalculate the CPR queue locally', async t => {
   const nativeDriver = nativeRole('Driver', 70, { occupant: 77, planningDegrees: 0 });
@@ -778,6 +891,8 @@ test('Torn native cards show distinct CPR and queue colors and stop only the blo
   const queue = 'askeladds-oc-planner-role-queue-full';
   await page.locator(`[data-fixture-role].${queue}`).waitFor({ timeout: 5000 });
   assert.match(await role(101, 'Muscle #1').getAttribute('class'), new RegExp(green));
+  assert.equal(await role(101, 'Muscle #1').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 74%');
+  assert.equal(await role(101, 'Muscle #1').locator('.ocp-queue-fallback-reason').count(), 0);
   assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(red));
   assert.match(await role(102, 'Muscle #2').getAttribute('class'), new RegExp(queue));
   assert.doesNotMatch(await role(102, 'Muscle #2').getAttribute('class'), new RegExp(red));
@@ -827,6 +942,8 @@ test('Torn native cards show distinct CPR and queue colors and stop only the blo
   await page.waitForFunction(() => testReadMemberPayload()?.snapshotRevision === 'native-cards-updated');
   assert.equal(await cprBlocked.isEnabled(), true);
   assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(green));
+  assert.equal(await role(101, 'Muscle #2').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 72%');
+  assert.equal(await role(101, 'Muscle #2').locator('.ocp-cpr-reason').count(), 0);
   assert.equal(await tornDisabled.getAttribute('aria-disabled'), null);
   assert.equal(await tornDisabled.isDisabled(), true);
   assert.equal(await queueBlocked.isDisabled(), true);
@@ -887,7 +1004,7 @@ test('CPR mode restores Join at 48h without a request and follows replaced role 
   assert.equal(await page.locator('.native-join').isEnabled(), true);
   await page.locator('.native-join').click();
   assert.equal(await page.evaluate(() => nativeJoins), 1);
-  assert.equal(await page.locator('.askeladds-oc-planner-role-cpr-eligible').count(), 1);
+  assert.equal(await page.locator('.askeladds-oc-planner-role-queue-warning').count(), 1);
   assert.equal(await page.evaluate(() => testCalls.length), requestCount);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 });

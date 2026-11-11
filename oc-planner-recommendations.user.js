@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.75
+// @version      0.2.76
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,10 +25,11 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.75";
-	const PAYLOAD_CACHE_VERSION = 11;
+	const SCRIPT_VERSION = "0.2.76";
+	const PAYLOAD_CACHE_VERSION = 12;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
+	const DEFAULT_PLANNING_QUEUE_WARNING_HOURS = 24;
 	const MAX_PLANNING_QUEUE_LIMIT_HOURS = 240;
 	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
 	const CPR_LOCK_ATTRIBUTE = "data-ocp-cpr-locked";
@@ -45,8 +46,9 @@
 	const CPR_ELIGIBLE_ROLE_CLASS = "askeladds-oc-planner-role-cpr-eligible";
 	const CPR_BLOCKED_ROLE_CLASS = "askeladds-oc-planner-role-cpr-blocked";
 	const QUEUE_FULL_ROLE_CLASS = "askeladds-oc-planner-role-queue-full";
+	const QUEUE_WARNING_ROLE_CLASS = "askeladds-oc-planner-role-queue-warning";
 	const QUEUE_FALLBACK_ROLE_CLASS = "askeladds-oc-planner-role-queue-fallback";
-	const ROLE_STATE_CLASSES = [CPR_ELIGIBLE_ROLE_CLASS, CPR_BLOCKED_ROLE_CLASS, QUEUE_FULL_ROLE_CLASS, QUEUE_FALLBACK_ROLE_CLASS];
+	const ROLE_STATE_CLASSES = [CPR_ELIGIBLE_ROLE_CLASS, CPR_BLOCKED_ROLE_CLASS, QUEUE_FULL_ROLE_CLASS, QUEUE_WARNING_ROLE_CLASS, QUEUE_FALLBACK_ROLE_CLASS];
 	const REQUEST_TIMEOUT_MS = 60000;
 	const AUTO_REFRESH_MS = 5 * 60 * 1000;
 	const ACTIVE_REFRESH_MS = 60 * 1000;
@@ -132,6 +134,7 @@
 	const paintedRoles = new Map();
 	const visibleQueueObservations = new WeakMap();
 	let effectiveQueueLocks = new Map();
+	let effectiveQueueWarnings = new Map();
 	let queueFallbackRoles = new Map();
 	let queueUnlockTimer;
 
@@ -141,7 +144,7 @@
 			opacity: .56;
 			cursor: not-allowed !important;
 		}
-		.ocp-queue-reason, .ocp-cpr-reason, .ocp-queue-fallback-reason {
+		.ocp-queue-reason, .ocp-cpr-reason, .ocp-queue-fallback-reason, .ocp-eligible-reason, .ocp-queue-warning-reason {
 			display: block;
 			padding: 4px 6px;
 			border-top: 1px solid var(--ocp-role-border, #b95858);
@@ -577,6 +580,13 @@
 			--ocp-role-head: #69512a;
 			--ocp-role-border: #ceaa63;
 		}
+		.${QUEUE_WARNING_ROLE_CLASS} {
+			--ocp-role-bg: #51491f;
+			--ocp-role-head: #655a27;
+			--ocp-role-border: #d6c263;
+		}
+		.ocp-eligible-reason { color: #ddffdf; }
+		.ocp-queue-warning-reason { color: #fff2b5; }
 		.ocp-queue-fallback-reason { color: #ffe1a4; }
 		:is(.${ROLE_STATE_CLASSES.join(", .")}) {
 			background: var(--ocp-role-bg) !important;
@@ -1197,6 +1207,7 @@
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
 					planningQueueLimitHours: recommendationPolicy.planningQueueLimitHours,
+					planningQueueWarningHours: recommendationPolicy.planningQueueWarningHours,
 					allowPlanningQueueFallback: recommendationPolicy.allowPlanningQueueFallback === true,
 					plannerGenerationEnabled: recommendationPolicy.plannerGenerationEnabled !== false,
 					plannerRefreshRequired,
@@ -1949,6 +1960,15 @@
 		Number.isInteger(hours) && hours >= 0 && hours <= MAX_PLANNING_QUEUE_LIMIT_HOURS
 			? hours : DEFAULT_PLANNING_QUEUE_LIMIT_HOURS;
 
+	const normalizePlanningQueueWarningHours = (hours) =>
+		Number.isInteger(hours) && hours >= 0 && hours <= MAX_PLANNING_QUEUE_LIMIT_HOURS
+			? hours : DEFAULT_PLANNING_QUEUE_WARNING_HOURS;
+
+	const eligibleRoleReason = (slot) => {
+		const cpr = getCprNumber(slot.cpr);
+		return cpr === undefined ? "CPR eligible" : `Eligible · CPR ${cpr}%`;
+	};
+
 	const queueLockReason = () =>
 		`Queue full · over ${normalizePlanningQueueLimitHours(state.lastPayload?.planningQueueLimitHours)}h of planning ahead`;
 
@@ -1992,15 +2012,26 @@
 		if (payload.recommendationMode === "cpr") {
 			for (const slot of payload.cprEligibleSlots || []) {
 				if (!state.takenRecommendationKeys.has(getRecommendationKey(slot))) {
-					states.set(queueRoleKey(slot), { slot, tone: CPR_ELIGIBLE_ROLE_CLASS });
+					states.set(queueRoleKey(slot), { slot, tone: CPR_ELIGIBLE_ROLE_CLASS, reason: eligibleRoleReason(slot), noticeClass: "ocp-eligible-reason" });
 				}
 			}
 			for (const slot of payload.queueFallbackCandidates || []) {
-				if (!slot.savedOpen) states.set(queueRoleKey(slot), { slot, tone: CPR_ELIGIBLE_ROLE_CLASS });
+				if (!slot.savedOpen) states.set(queueRoleKey(slot), { slot, tone: CPR_ELIGIBLE_ROLE_CLASS, reason: eligibleRoleReason(slot), noticeClass: "ocp-eligible-reason" });
 			}
 			for (const slot of payload.cprIneligibleSlots || []) {
 				states.set(queueRoleKey(slot), { slot, tone: CPR_BLOCKED_ROLE_CLASS, attribute: CPR_LOCK_ATTRIBUTE, reason: slot.reason });
 			}
+		}
+		for (const [key, slot] of effectiveQueueWarnings) {
+			const previous = states.get(key);
+			if (slot.unlockAt <= Math.floor(Date.now() / 1000) || previous?.attribute === CPR_LOCK_ATTRIBUTE ||
+				(payload.recommendationMode === "cpr" && !previous)) continue;
+			const cpr = getCprNumber(previous?.slot.cpr);
+			const hours = normalizePlanningQueueWarningHours(payload.planningQueueWarningHours);
+			states.set(key, {
+				slot, tone: QUEUE_WARNING_ROLE_CLASS, noticeClass: "ocp-queue-warning-reason",
+				reason: `${cpr === undefined ? "" : `CPR ${cpr}% · `}>${hours}h planning ahead`,
+			});
 		}
 		for (const slot of effectiveQueueLocks.values()) {
 			if (getQueueLock(slot)) {
@@ -2029,6 +2060,7 @@
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
 		effectiveQueueLocks.clear();
+		effectiveQueueWarnings.clear();
 		queueFallbackRoles.clear();
 		for (const [button, binding] of joinNotices) removeJoinNotice(button, binding);
 		for (const [role, tone] of paintedRoles) role.classList.remove(tone);
@@ -2045,7 +2077,7 @@
 		const activeCrimeId = getCurrentPageCrimeId();
 		const crimeElements = new Map();
 		const now = Math.floor(Date.now() / 1000);
-		const nextUnlock = Math.min(Infinity, ...[...effectiveQueueLocks.values()]
+		const nextUnlock = Math.min(Infinity, ...[...effectiveQueueLocks.values(), ...effectiveQueueWarnings.values()]
 			.map(slot => slot.unlockAt).filter(unlockAt => unlockAt > now));
 		for (const roleState of getNativeRoleStates().values()) {
 			const { slot, tone, reason } = roleState;
@@ -2073,11 +2105,11 @@
 			if (!desired || desired.attribute !== binding.attribute || desired.reason !== binding.label.textContent ||
 				binding.label.parentElement !== desired.role) removeJoinNotice(button, binding);
 		}
-		for (const [button, { attribute, reason, role }] of desiredNotices) {
+		for (const [button, { attribute, reason, role, noticeClass }] of desiredNotices) {
 			if (joinNotices.has(button)) continue;
 			const label = document.createElement("span");
-			label.className = !attribute ? "ocp-queue-fallback-reason"
-				: attribute === QUEUE_LOCK_ATTRIBUTE ? "ocp-queue-reason" : "ocp-cpr-reason";
+			label.className = noticeClass || (!attribute ? "ocp-queue-fallback-reason"
+				: attribute === QUEUE_LOCK_ATTRIBUTE ? "ocp-queue-reason" : "ocp-cpr-reason");
 			label.textContent = reason;
 			const previousAriaDisabled = button.getAttribute("aria-disabled");
 			if (attribute) {
@@ -3015,6 +3047,7 @@
 
 	const getRecommendationPolicyStatus = (recommendationPolicy = {}) => ({
 		planningQueueLimitHours: normalizePlanningQueueLimitHours(recommendationPolicy.planningQueueLimitHours),
+		planningQueueWarningHours: normalizePlanningQueueWarningHours(recommendationPolicy.planningQueueWarningHours),
 		allowPlanningQueueFallback: recommendationPolicy.allowPlanningQueueFallback === true,
 		runtimeStatus: String(recommendationPolicy.runtimeStatus || ""),
 		runtimeMessage: String(recommendationPolicy.runtimeMessage || ""),
@@ -3172,9 +3205,11 @@
 	const refreshEffectiveQueueLocks = () => {
 		const payload = state.lastPayload;
 		const limitHours = normalizePlanningQueueLimitHours(payload?.planningQueueLimitHours);
+		const warningHours = normalizePlanningQueueWarningHours(payload?.planningQueueWarningHours);
 		effectiveQueueLocks = new Map(limitHours ? Object.entries(payload?.queueLocks || {}) : []);
+		effectiveQueueWarnings = new Map(warningHours ? Object.entries(payload?.queueWarnings || {}) : []);
 		queueFallbackRoles = new Map();
-		if (!limitHours || !payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
+		if ((!limitHours && !warningHours) || !payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
 
 		const activeId = getCurrentPageCrimeId();
 		const now = Math.floor(Date.now() / 1000);
@@ -3189,22 +3224,25 @@
 			if (!card.matches(NATIVE_CRIME)) continue;
 			const queue = readVisibleQueue(card, payload.queueSlotsByCrime?.[crimeId] || [], includeScheduledTurns, now);
 			if (!queue) continue;
-			for (const key of effectiveQueueLocks.keys()) {
-				if (key.startsWith(`${crimeId}|`)) effectiveQueueLocks.delete(key);
-			}
-			for (const slot of queue.slots) {
-				if (!slot.open) continue;
-				const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, includeScheduledTurns, limitHours);
-				if (unlockAt) {
-					const target = { crimeId, position: slot.position, unlockAt };
-					effectiveQueueLocks.set(queueRoleKey(target), target);
+			for (const [hours, states] of [[limitHours, effectiveQueueLocks], [warningHours, effectiveQueueWarnings]]) {
+				for (const key of states.keys()) {
+					if (key.startsWith(`${crimeId}|`)) states.delete(key);
+				}
+				if (!hours) continue;
+				for (const slot of queue.slots) {
+					if (!slot.open) continue;
+					const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, states === effectiveQueueLocks && includeScheduledTurns, hours);
+					if (unlockAt) {
+						const target = { crimeId, position: slot.position, unlockAt };
+						states.set(queueRoleKey(target), target);
+					}
 				}
 			}
 		}
 		queueFallbackRoles = getQueueFallbackRoles(payload, visibleCrimes, now);
 	};
 
-	const buildQueueLocks = (planner, mode, limitHours) => {
+	const buildQueueLocks = (planner, mode, limitHours, includeScheduledTurns = mode === "plan") => {
 		if (!limitHours) return {};
 		const now = Math.floor(Date.now() / 1000);
 		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
@@ -3217,7 +3255,7 @@
 				if (slot.currentUserId || slot.currentUserName) continue;
 				const position = slot.position || slot.role;
 				if (!position) continue;
-				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, mode === "plan", limitHours);
+				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, includeScheduledTurns, limitHours);
 				if (unlockAt) {
 					const target = { crimeId: crime.id, position, unlockAt };
 					locks[queueRoleKey(target)] = target;
@@ -3310,6 +3348,7 @@
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
 			queueLocks: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueLimitHours),
+			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueWarningHours, false),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
 				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements)
@@ -3823,7 +3862,7 @@
 		const openSlotCount = Number(payload.cprOpenSlotCount || 0);
 		let rule = "No open eligible roles.";
 		if (roleCount) {
-			rule = "Green fits your CPR. Red shows a CPR or queue restriction.";
+			rule = "Green fits your CPR. Yellow means a longer planning wait; Join remains allowed. Red shows a CPR or queue restriction.";
 		} else if (payload.cprMemberStatus === "not_full_member") {
 			rule = "Recruit status: roles appear after full membership.";
 		} else if (payload.cprMemberStatus === "missing_cpr") {
