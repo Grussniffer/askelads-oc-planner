@@ -8,6 +8,14 @@ const start=source.indexOf('\tconst getSlotCprBand =');
 const end=source.indexOf('\tconst formatCprBand =',start);
 const helpers=source.slice(source.indexOf('\tconst getCprNumber ='),source.indexOf('\tconst ROLE_TITLE_SELECTOR ='));
 const getBand=runInNewContext(helpers+source.slice(start,end)+'\ngetSlotCprBand;');
+const formatBand=runInNewContext(helpers+source.slice(start,source.indexOf('\tconst getMemberCprForSlot =',start))+'\nformatCprBand;');
+
+test('exact CPR bands are displayed as exact values, including zero and 100 percent',()=>{
+ for (const value of [0,50,100]) {
+  assert.equal(formatBand({minimumRecommendedCpr:value,maximumRecommendedCpr:value},{difficulty:3},{}),`${value}% CPR`);
+ }
+ assert.equal(formatBand({minimumRecommendedCpr:75,maximumRecommendedCpr:100},{difficulty:3},{}),'75%+ CPR');
+});
 test('new Useless tier inherits saved Low until explicitly configured',()=>{
  const slot={roleImpactLabel:'useless',minimumRecommendedCpr:0,maximumRecommendedCpr:100};
  const requirements={low:{'7':{min:20,max:55}}};

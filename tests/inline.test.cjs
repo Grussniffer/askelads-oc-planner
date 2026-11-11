@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 13, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 13);
+  assert.equal(cached.schemaVersion, 14);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,52 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+test('a zero-weight numbered role uses its own impact band and respects custom maximum and exact limits', async t => {
+  const snapshot = {
+    revision: 'zero-weight-band', recommendationPolicy: { mode: 'cpr', cprRequirements: {
+      useless: { '3': { min: 0, max: 100 } }, high: { '3': { min: 75, max: 100 } },
+      unknown: { '3': { min: 100, max: 100 } },
+    } },
+    planner: { id: 'zero-weight-run', generatedAt: queueTime, snapshotKind: 'cpr',
+      members: [{ memberId: 123, crimes: { 'Test OC': { 'Looter #1': 80, 'Looter #2': 95 } } }],
+      crimes: [{ id: 101, name: 'Test OC', difficulty: 3, status: 'Recruiting', openSlots: 2, slots: [
+        { position: 'Looter #1', role: 'Looter', roleWeight: 80, roleImpactLabel: 'high', minimumRecommendedCpr: 75, maximumRecommendedCpr: 100 },
+        { position: 'Looter #2', role: 'Looter', roleWeight: 0, roleImpactLabel: 'useless', minimumRecommendedCpr: 100, maximumRecommendedCpr: 100 },
+      ] }],
+    },
+  };
+  const html = fixture.replace(crime, nativeCrime(101, [nativeRole('Looter #1', 80), nativeRole('Looter #2', 95)]));
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = page.locator('[data-fixture-role="Looter #2"]');
+  await role.locator('.ocp-eligible-reason').waitFor();
+  assert.equal(await role.locator('button').isEnabled(), true, 'the current Useless band overrides an obsolete snapshot band');
+  for (const [revision, min, max, reason] of [
+    ['useless-max-75', 0, 75, 'CPR 95% · max 75%'],
+    ['useless-exact-100', 100, 100, 'CPR 95% · requires 100%'],
+  ]) {
+    await page.evaluate(({ revision, min, max }) => {
+      testPlannerSnapshot.revision = revision;
+      testPlannerSnapshot.recommendationPolicy.cprRequirements.useless['3'] = { min, max };
+      testMenu['OC Planner: refresh']();
+    }, { revision, min, max });
+    await page.waitForFunction(revision => testReadMemberPayload()?.snapshotRevision === revision, revision);
+    assert.ok((await role.locator('.ocp-cpr-reason').innerText()).startsWith(reason));
+    assert.doesNotMatch(await role.innerText(), /100%\+/);
+    assert.equal(await role.locator('button').isDisabled(), true);
+    assert.equal(await page.locator('[data-fixture-role="Looter #1"] button').isEnabled(), true, 'a numbered sibling keeps its own band');
+  }
+  await page.evaluate(() => {
+    testPlannerSnapshot.revision = 'useless-exact-fit';
+    testPlannerSnapshot.planner.members[0].crimes['Test OC']['Looter #2'] = 100;
+    testMenu['OC Planner: refresh']();
+  });
+  await page.waitForFunction(() => testReadMemberPayload()?.snapshotRevision === 'useless-exact-fit');
+  assert.equal(await role.locator('button').isEnabled(), true);
+  const payload = await page.evaluate(() => testReadMemberPayload().payload);
+  assert.equal(payload.cprEligibleSlots.find(slot => slot.position === 'Looter #2').cprBand, '100% CPR');
+});
+
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);

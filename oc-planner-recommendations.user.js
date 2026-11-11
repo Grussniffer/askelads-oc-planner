@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.77
+// @version      0.2.78
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.77";
-	const PAYLOAD_CACHE_VERSION = 13;
+	const SCRIPT_VERSION = "0.2.78";
+	const PAYLOAD_CACHE_VERSION = 14;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
 	const DEFAULT_PLANNING_QUEUE_WARNING_HOURS = 24;
@@ -2933,6 +2933,7 @@
 		const band = getSlotCprBand(slot, crime, cprRequirements);
 		if (!band) return "CPR limits unavailable";
 		const { min, max } = band;
+		if (min === max) return `${min}% CPR`;
 		return max < 100 ? `${Math.round(min)}-${Math.round(max)}% CPR` : `${Math.round(min)}%+ CPR`;
 	};
 
@@ -3043,7 +3044,8 @@
 					continue;
 				}
 				if (cpr < band.min || cpr > band.max) {
-					const limit = cpr < band.min ? `needs ${band.min}%+` : `max ${band.max}%`;
+					const limit = band.min === band.max ? `requires ${band.min}%`
+						: cpr < band.min ? `needs ${band.min}%+` : `max ${band.max}%`;
 					ineligibleSlots.push({
 						crimeId: crime.id || slot.crimeId,
 						position: slot.position,
