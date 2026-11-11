@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.76
+// @version      0.2.77
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,14 +25,15 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.76";
-	const PAYLOAD_CACHE_VERSION = 12;
+	const SCRIPT_VERSION = "0.2.77";
+	const PAYLOAD_CACHE_VERSION = 13;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
 	const DEFAULT_PLANNING_QUEUE_WARNING_HOURS = 24;
 	const MAX_PLANNING_QUEUE_LIMIT_HOURS = 240;
 	const QUEUE_LOCK_ATTRIBUTE = "data-ocp-queue-locked";
 	const CPR_LOCK_ATTRIBUTE = "data-ocp-cpr-locked";
+	const ROLE_NOTICE_ATTRIBUTE = "data-ocp-role-notice";
 
 	const STORAGE_KEY = "askeladds_oc_planner_api_key";
 	const PROFILE_STORAGE_KEY = "askeladds_oc_planner_profile";
@@ -135,6 +136,7 @@
 	const visibleQueueObservations = new WeakMap();
 	let effectiveQueueLocks = new Map();
 	let effectiveQueueWarnings = new Map();
+	let effectiveJoinedPlanningDoneAt = new Map();
 	let queueFallbackRoles = new Map();
 	let queueUnlockTimer;
 
@@ -152,6 +154,8 @@
 			font: 700 11px/1.25 Arial, sans-serif;
 			text-align: center;
 			overflow-wrap: anywhere;
+			white-space: pre-line;
+			font-variant-numeric: tabular-nums;
 		}
 		#${PANEL_ID} {
 			box-sizing: border-box;
@@ -1969,6 +1973,13 @@
 		return cpr === undefined ? "CPR eligible" : `Eligible · CPR ${cpr}%`;
 	};
 
+	const rolePlanningLeft = (slot, now = Math.floor(Date.now() / 1000)) => {
+		const doneAt = effectiveJoinedPlanningDoneAt.get(String(slot.crimeId));
+		if (!Number.isFinite(doneAt)) return "";
+		const minutes = Math.ceil(Math.max(0, doneAt - now) / 60);
+		return `Joined planning left: ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+	};
+
 	const queueLockReason = () =>
 		`Queue full · over ${normalizePlanningQueueLimitHours(state.lastPayload?.planningQueueLimitHours)}h of planning ahead`;
 
@@ -2028,9 +2039,11 @@
 				(payload.recommendationMode === "cpr" && !previous)) continue;
 			const cpr = getCprNumber(previous?.slot.cpr);
 			const hours = normalizePlanningQueueWarningHours(payload.planningQueueWarningHours);
+			const planning = rolePlanningLeft(slot);
 			states.set(key, {
 				slot, tone: QUEUE_WARNING_ROLE_CLASS, noticeClass: "ocp-queue-warning-reason",
-				reason: `${cpr === undefined ? "" : `CPR ${cpr}% · `}>${hours}h planning ahead`,
+				reason: planning ? (cpr === undefined ? "Longer planning wait" : `CPR ${cpr}%`)
+					: `${cpr === undefined ? "" : `CPR ${cpr}% · `}>${hours}h planning ahead`,
 			});
 		}
 		for (const slot of effectiveQueueLocks.values()) {
@@ -2040,6 +2053,10 @@
 		}
 		for (const [key, slot] of queueFallbackRoles) {
 			states.set(key, { slot, tone: QUEUE_FALLBACK_ROLE_CLASS, reason: "Queue exception · no eligible role within the limit" });
+		}
+		for (const roleState of states.values()) {
+			const planning = rolePlanningLeft(roleState.slot);
+			if (planning) roleState.reason += `\n${planning}`;
 		}
 		return states;
 	};
@@ -2061,6 +2078,7 @@
 		queueUnlockTimer = undefined;
 		effectiveQueueLocks.clear();
 		effectiveQueueWarnings.clear();
+		effectiveJoinedPlanningDoneAt.clear();
 		queueFallbackRoles.clear();
 		for (const [button, binding] of joinNotices) removeJoinNotice(button, binding);
 		for (const [role, tone] of paintedRoles) role.classList.remove(tone);
@@ -2068,7 +2086,11 @@
 	};
 
 	const syncNativeRoleStates = () => {
-		if (document.visibilityState === "hidden") return;
+		if (!state.active || !isOcCrimesPage() || document.visibilityState === "hidden") {
+			window.clearTimeout(queueUnlockTimer);
+			queueUnlockTimer = undefined;
+			return;
+		}
 		refreshEffectiveQueueLocks();
 		window.clearTimeout(queueUnlockTimer);
 		queueUnlockTimer = undefined;
@@ -2077,6 +2099,7 @@
 		const activeCrimeId = getCurrentPageCrimeId();
 		const crimeElements = new Map();
 		const now = Math.floor(Date.now() / 1000);
+		let nextTimeUpdate = Infinity;
 		const nextUnlock = Math.min(Infinity, ...[...effectiveQueueLocks.values(), ...effectiveQueueWarnings.values()]
 			.map(slot => slot.unlockAt).filter(unlockAt => unlockAt > now));
 		for (const roleState of getNativeRoleStates().values()) {
@@ -2088,6 +2111,11 @@
 			crimeElements.set(id, crime);
 			const target = findRoleJoinTarget(slot, crime);
 			if (!target) continue;
+			const doneAt = effectiveJoinedPlanningDoneAt.get(id);
+			if (Number.isFinite(doneAt) && doneAt > now) {
+				const nextMinute = doneAt - (Math.ceil((doneAt - now) / 60) - 1) * 60;
+				nextTimeUpdate = Math.min(nextTimeUpdate, nextMinute);
+			}
 			desiredRoles.set(target.role, tone);
 			if (reason) desiredNotices.set(target.button, { ...roleState, role: target.role });
 		}
@@ -2102,14 +2130,21 @@
 		}
 		for (const [button, binding] of joinNotices) {
 			const desired = desiredNotices.get(button);
-			if (!desired || desired.attribute !== binding.attribute || desired.reason !== binding.label.textContent ||
+			if (!desired || desired.attribute !== binding.attribute ||
 				binding.label.parentElement !== desired.role) removeJoinNotice(button, binding);
 		}
 		for (const [button, { attribute, reason, role, noticeClass }] of desiredNotices) {
-			if (joinNotices.has(button)) continue;
-			const label = document.createElement("span");
-			label.className = noticeClass || (!attribute ? "ocp-queue-fallback-reason"
+			const className = noticeClass || (!attribute ? "ocp-queue-fallback-reason"
 				: attribute === QUEUE_LOCK_ATTRIBUTE ? "ocp-queue-reason" : "ocp-cpr-reason");
+			const existing = joinNotices.get(button);
+			if (existing) {
+				if (existing.label.textContent !== reason) existing.label.textContent = reason;
+				if (existing.label.className !== className) existing.label.className = className;
+				continue;
+			}
+			const label = document.createElement("span");
+			label.className = className;
+			label.setAttribute(ROLE_NOTICE_ATTRIBUTE, "");
 			label.textContent = reason;
 			const previousAriaDisabled = button.getAttribute("aria-disabled");
 			if (attribute) {
@@ -2119,8 +2154,14 @@
 			role.append(label);
 			joinNotices.set(button, { attribute, label, previousAriaDisabled });
 		}
-		if (Number.isFinite(nextUnlock)) {
-			queueUnlockTimer = window.setTimeout(render, Math.min(nextUnlock * 1000 - Date.now() + 1, 2_147_483_647));
+		const nextUpdate = Math.min(nextUnlock, nextTimeUpdate);
+		if (Number.isFinite(nextUpdate)) {
+			queueUnlockTimer = window.setTimeout(() => {
+				// Threshold changes also affect panel guidance. Ordinary minute
+				// ticks only update the existing native role notices.
+				if (nextUpdate === nextUnlock && document.visibilityState !== "hidden") render();
+				else syncNativeRoleStates();
+			}, Math.min(Math.max(1, nextUpdate * 1000 - Date.now() + 1), 2_147_483_647));
 		}
 	};
 
@@ -3208,8 +3249,10 @@
 		const warningHours = normalizePlanningQueueWarningHours(payload?.planningQueueWarningHours);
 		effectiveQueueLocks = new Map(limitHours ? Object.entries(payload?.queueLocks || {}) : []);
 		effectiveQueueWarnings = new Map(warningHours ? Object.entries(payload?.queueWarnings || {}) : []);
+		effectiveJoinedPlanningDoneAt = new Map(Object.entries(payload?.joinedPlanningDoneAtByCrime || {})
+			.filter(([, doneAt]) => Number.isFinite(doneAt) && doneAt >= 0));
 		queueFallbackRoles = new Map();
-		if ((!limitHours && !warningHours) || !payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
+		if (!payload || document.visibilityState !== "visible" || (!isTornPda && !document.hasFocus())) return;
 
 		const activeId = getCurrentPageCrimeId();
 		const now = Math.floor(Date.now() / 1000);
@@ -3224,6 +3267,7 @@
 			if (!card.matches(NATIVE_CRIME)) continue;
 			const queue = readVisibleQueue(card, payload.queueSlotsByCrime?.[crimeId] || [], includeScheduledTurns, now);
 			if (!queue) continue;
+			effectiveJoinedPlanningDoneAt.set(crimeId, queue.joinedDoneAt);
 			for (const [hours, states] of [[limitHours, effectiveQueueLocks], [warningHours, effectiveQueueWarnings]]) {
 				for (const key of states.keys()) {
 					if (key.startsWith(`${crimeId}|`)) states.delete(key);
@@ -3278,6 +3322,33 @@
 				plannedMemberEndAt: slot.plannedMemberEndAt,
 			}];
 		})]));
+
+	const buildJoinedPlanningDoneAtByCrime = (planner, mode) => {
+		const result = {};
+		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
+		const fractionalProgress = planner.snapshotKind ? planner.snapshotKind === "cpr" : mode === "cpr";
+		for (const crime of planner.crimes || []) {
+			if (normalizeText(crime.status) !== "recruiting" || !/^\d+$/.test(String(crime.id || ""))) continue;
+			const slots = crime.slots || [];
+			const joined = slots.filter(slot => slot.currentUserId || slot.currentUserName);
+			const progress = joined.map(slot => {
+				const raw = slot.currentProgress;
+				if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+				const percent = fractionalProgress && raw <= 1 ? raw * 100 : raw;
+				return percent >= 0 && percent <= 100 ? percent : undefined;
+			});
+			if (slots.length && !joined.length) result[String(crime.id)] = 0;
+			else if (joined.length && progress.every(percent => percent !== undefined)) {
+				const remaining = joinedPlanningSeconds(progress);
+				if (!remaining) result[String(crime.id)] = 0;
+				else if (Number.isFinite(snapshotUnix) && snapshotUnix > 0) result[String(crime.id)] = Math.floor(snapshotUnix + remaining);
+			}
+			if (result[String(crime.id)] === undefined && Number.isFinite(crime.currentPlanningDoneAt) && crime.currentPlanningDoneAt > 0) {
+				result[String(crime.id)] = crime.currentPlanningDoneAt;
+			}
+		}
+		return result;
+	};
 
 	const findQueueFallbackCandidates = (planner, memberId, mode, cprRequirements) => {
 		const candidates = [];
@@ -3350,6 +3421,7 @@
 			queueLocks: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueLimitHours),
 			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueWarningHours, false),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
+			joinedPlanningDoneAtByCrime: buildJoinedPlanningDoneAtByCrime(planner, recommendationMode),
 			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
 				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements)
 				: [],
@@ -4315,6 +4387,7 @@
 		state.pageObserver = new MutationObserver((mutations) => {
 			const relevant = mutations.some((mutation) => {
 				const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+				if (target?.closest(`[${ROLE_NOTICE_ATTRIBUTE}]`)) return false;
 				if (mutation.type !== "childList") {
 					if (!target?.closest(NATIVE_CRIME)) return false;
 					return !!target.closest(`${NATIVE_PLANNING_CLOCK}, ${NATIVE_PLANNING_PROGRESS}`) ||

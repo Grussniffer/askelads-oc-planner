@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 12, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 13, clockTime } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -309,7 +309,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 12);
+  assert.equal(cached.schemaVersion, 13);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -415,7 +415,7 @@ test('copied diagnostics distinguish missing CPR from missing limits and contain
   assert.doesNotMatch(text,/test-only|keyCacheId|api_key/);
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -525,11 +525,11 @@ for (const width of [1000, 375]) {
     const page = await open(t, { saved: true, cpr: true, width, html, plannerSnapshot: snapshot, clockTime: queueTime });
     const role = (id, position = 'Muscle #2') => page.locator(`[data-oc-id="${id}"] [data-fixture-role="${position}"]`);
     await role(101).locator('.ocp-queue-warning-reason').waitFor();
-    assert.equal(await role(101).locator('.ocp-queue-warning-reason').innerText(), 'CPR 80% · >24h planning ahead');
+    assert.equal(await role(101).locator('.ocp-queue-warning-reason').innerText(), 'CPR 80%\nJoined planning left: 36h 00m');
     assert.match(await role(101).getAttribute('class'), /role-queue-warning/);
     assert.equal(await role(101).locator('button').isEnabled(), true);
     assert.equal(await role(101).locator('button').getAttribute('aria-disabled'), null);
-    assert.equal(await role(102).locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 80%', 'exactly 24h remains green');
+    assert.equal(await role(102).locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 80%\nJoined planning left: 24h 00m', 'exactly 24h remains green');
     assert.match(await role(103).getAttribute('class'), /role-queue-full/);
     assert.equal(await role(103).locator('button').isDisabled(), true);
     assert.match(await role(101, 'Robber').getAttribute('class'), /role-cpr-blocked/);
@@ -578,7 +578,7 @@ test('yellow warning has its own configurable threshold and stays active with qu
     await page.waitForFunction(hours => testReadMemberPayload()?.payload?.planningQueueWarningHours === hours, hours);
     assert.equal(await role.locator('.ocp-queue-warning-reason').count(), hours === 12 ? 1 : 0);
     assert.equal(await role.locator('button').isEnabled(), true);
-    if (hours === 12) assert.match(await role.innerText(), />12h planning ahead/);
+    if (hours === 12) assert.match(await role.innerText(), /Joined planning left: 36h 00m/);
   }
 });
 
@@ -604,6 +604,89 @@ test('yellow counts joined planning rather than future recommendations in a comp
   await page.waitForFunction(() => testReadMemberPayload()?.payload?.plannerRunId === 'queue-run');
   assert.equal(await page.locator('.ocp-queue-warning-reason').count(), 0, '12h joined planning stays below 24h despite future turns');
   assert.equal(await page.locator('[data-ocp-queue-locked]').count(), 0);
+});
+
+for (const thresholdsOff of [false, true]) {
+  test(`remaining planning ticks in place without requests, including disabled color rules (${thresholdsOff})`, async t => {
+    const snapshot = liveQueueSnapshot('cpr', [{ id: 101, slots: [
+      occupiedQueueSlot('Driver', 77, .5), occupiedQueueSlot('Lookout', 88, 0), targetQueueSlot,
+    ] }]);
+    if (thresholdsOff) Object.assign(snapshot.recommendationPolicy, { planningQueueLimitHours: 0, planningQueueWarningHours: 0 });
+    const html = fixture.replace(crime, nativeCrime(101, [
+      nativeRole('Driver', 70, { occupant: 77, planningDegrees: 180 }),
+      nativeRole('Lookout', 70, { occupant: 88, planningDegrees: 0 }), nativeRole('Muscle #2', 80),
+    ]));
+    const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+    const role = page.locator('[data-fixture-role="Muscle #2"]');
+    const label = role.locator('[data-ocp-role-notice]');
+    await label.waitFor();
+    assert.match(await label.innerText(), /Joined planning left: 36h 00m/);
+    assert.equal(await role.locator('button').isEnabled(), true);
+    await page.clock.fastForward(500);
+    const requests = await page.evaluate(() => {
+      window.originalNotice = document.querySelector('[data-fixture-role="Muscle #2"] [data-ocp-role-notice]');
+      window.originalJoin = document.querySelector('[data-fixture-role="Muscle #2"] button');
+      window.originalPanelHeader = document.querySelector('#askeladds-oc-planner-panel .ocp-header');
+      return testCalls.length;
+    });
+    await page.clock.fastForward(61_000);
+    assert.match(await label.innerText(), /Joined planning left: 35h 59m/);
+    await page.clock.fastForward(500);
+    assert.equal(await page.evaluate(() => originalNotice === document.querySelector('[data-fixture-role="Muscle #2"] [data-ocp-role-notice]')), true);
+    assert.equal(await page.evaluate(() => originalJoin === document.querySelector('[data-fixture-role="Muscle #2"] button')), true);
+    assert.equal(await page.evaluate(() => originalPanelHeader === document.querySelector('#askeladds-oc-planner-panel .ocp-header')), true, 'timer does not rebuild panel indirectly');
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+
+    await page.locator('[data-fixture-role="Driver"] .planning___m3').evaluate(el => {
+      el.style.background = 'conic-gradient(var(--oc-clock-planning-bg) 270deg, transparent 0)';
+    });
+    await page.waitForFunction(() => document.querySelector('[data-fixture-role="Muscle #2"] [data-ocp-role-notice]')?.textContent.includes('30h 00m'));
+    assert.equal(await page.evaluate(() => testCalls.length), requests, 'visible progress replaces saved timing locally');
+  });
+}
+
+test('unknown saved planning never displays zero; known finished planning and timestamp fallbacks do', async t => {
+  const snapshot = queueSnapshot('cpr');
+  snapshot.planner.crimes[0].slots = [occupiedQueueSlot('Driver', 77, undefined), targetQueueSlot];
+  const page = await open(t, { saved: true, cpr: true, html: queueHtml, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = page.locator('[data-crime-id="101"] .slot-wrapper').last();
+  const label = role.locator('[data-ocp-role-notice]');
+  await label.waitFor();
+  assert.doesNotMatch(await label.innerText(), /planning left/);
+  for (const [revision, progress, doneAt, expected] of [
+    ['partial-progress', undefined, undefined, undefined],
+    ['timestamp-fallback', undefined, queueNow + 9 * 3600 + 3 * 60, '9h 03m'],
+    ['finished-progress', 1, undefined, '0h 00m'],
+  ]) {
+    await page.evaluate(({ revision, progress, doneAt }) => {
+      testPlannerSnapshot.revision = revision;
+      const crime = testPlannerSnapshot.planner.crimes[0];
+      crime.currentPlanningDoneAt = doneAt;
+      crime.slots[0].currentProgress = progress;
+      if (revision === 'partial-progress') crime.slots.push({ position: 'Lookout', currentUserId: 88, currentProgress: .5 });
+      else crime.slots = crime.slots.filter(slot => slot.position !== 'Lookout');
+      testMenu['OC Planner: refresh']();
+    }, { revision, progress, doneAt });
+    await page.waitForFunction(revision => testReadMemberPayload()?.snapshotRevision === revision, revision);
+    if (expected) assert.match(await label.innerText(), new RegExp(`Joined planning left: ${expected}`));
+    else assert.doesNotMatch(await label.innerText(), /planning left/);
+  }
+});
+
+test('red full-plan queue keeps its reason while displayed time counts only already-joined work', async t => {
+  const snapshot = queueSnapshot('plan');
+  // Leave a scheduled gap. Calendar time until the red lock expires is not
+  // interchangeable with either joined planning or queued work duration.
+  snapshot.planner.crimes[0].slots[1].plannedStartAt = queueNow + 24 * 3600;
+  snapshot.planner.crimes[0].slots[2].plannedStartAt = queueNow + 48 * 3600;
+  snapshot.planner.crimes[0].slots[3].plannedStartAt = queueNow + 72 * 3600;
+  const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = page.locator('[data-crime-id="101"] .slot-wrapper').last();
+  const label = role.locator('.ocp-queue-reason');
+  await label.waitFor();
+  assert.match(await label.innerText(), /Queue full · over 48h of planning ahead/);
+  assert.match(await label.innerText(), /Joined planning left: 12h 00m/);
+  assert.equal(await role.locator('button.native-join').isDisabled(), true);
 });
 
 test('visible Torn joins, progress-only updates, and leaves recalculate the CPR queue locally', async t => {
@@ -689,7 +772,7 @@ test('the faction queue limit applies to both native and saved work and can be d
   snapshot.planner.members[0].crimes['Test OC'].Hacker = 80;
   const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
   const joins = page.locator('[data-fixture-role="Muscle #2"] button');
-  const queueLabels = page.getByText('Queue full · over 24h of planning ahead', { exact: true });
+  const queueLabels = page.locator('.ocp-queue-reason').filter({ hasText: 'Queue full · over 24h of planning ahead' });
   await queueLabels.last().waitFor();
   assert.equal(await queueLabels.count(), 4);
   assert.equal(await joins.first().isDisabled(), true);
@@ -891,7 +974,7 @@ test('Torn native cards show distinct CPR and queue colors and stop only the blo
   const queue = 'askeladds-oc-planner-role-queue-full';
   await page.locator(`[data-fixture-role].${queue}`).waitFor({ timeout: 5000 });
   assert.match(await role(101, 'Muscle #1').getAttribute('class'), new RegExp(green));
-  assert.equal(await role(101, 'Muscle #1').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 74%');
+  assert.equal(await role(101, 'Muscle #1').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 74%\nJoined planning left: 0h 00m');
   assert.equal(await role(101, 'Muscle #1').locator('.ocp-queue-fallback-reason').count(), 0);
   assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(red));
   assert.match(await role(102, 'Muscle #2').getAttribute('class'), new RegExp(queue));
@@ -942,7 +1025,7 @@ test('Torn native cards show distinct CPR and queue colors and stop only the blo
   await page.waitForFunction(() => testReadMemberPayload()?.snapshotRevision === 'native-cards-updated');
   assert.equal(await cprBlocked.isEnabled(), true);
   assert.match(await role(101, 'Muscle #2').getAttribute('class'), new RegExp(green));
-  assert.equal(await role(101, 'Muscle #2').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 72%');
+  assert.equal(await role(101, 'Muscle #2').locator('.ocp-eligible-reason').innerText(), 'Eligible · CPR 72%\nJoined planning left: 0h 00m');
   assert.equal(await role(101, 'Muscle #2').locator('.ocp-cpr-reason').count(), 0);
   assert.equal(await tornDisabled.getAttribute('aria-disabled'), null);
   assert.equal(await tornDisabled.isDisabled(), true);
@@ -957,7 +1040,7 @@ test('Torn native cards show distinct CPR and queue colors and stop only the blo
 test('full plan disables only the exact Join with over 48h ahead, and restores it after a fresh plan', async t => {
   const page = await open(t, { saved: true, html: queueHtml, plannerSnapshot: queueSnapshot('plan'), clockTime: queueTime });
   const join = page.locator('.native-join');
-  await page.getByText('Queue full · over 48h of planning ahead', { exact: true }).waitFor();
+  await page.locator('.ocp-queue-reason').filter({ hasText: 'Queue full · over 48h of planning ahead' }).waitFor();
   assert.equal(await join.isDisabled(), true);
   assert.equal(await page.locator('#leave').isEnabled(), true);
   assert.equal(await page.locator('#other-crime').isEnabled(), true);
@@ -974,7 +1057,7 @@ test('full plan disables only the exact Join with over 48h ahead, and restores i
     snapshot.planner.crimes[0].slots[0].currentProgress = 100;
     testMenu['OC Planner: refresh']();
   });
-  await page.getByText('Queue full · over 48h of planning ahead', { exact: true }).waitFor({ state: 'detached' });
+  await page.locator('.ocp-queue-reason').filter({ hasText: 'Queue full · over 48h of planning ahead' }).waitFor({ state: 'detached' });
   assert.equal(await join.isEnabled(), true);
   assert.equal(await page.locator('#earlier').isDisabled(), true);
   await join.click();
@@ -985,6 +1068,10 @@ test('CPR mode restores Join at 48h without a request and follows replaced role 
   const page = await open(t, { saved: true, cpr: true, html: queueHtml, width: 375, plannerSnapshot: queueSnapshot('cpr'), clockTime: queueTime });
   const lock = page.locator('[data-ocp-queue-locked]');
   await lock.waitFor();
+  await page.locator(`${panel} .ocp-collapse`).click();
+  await page.locator(`${panel} .ocp-cpr-details`).evaluate(el => { el.open = true; });
+  const panelQueueChip = page.locator(`${panel} .ocp-cpr-role-requirement`).filter({ hasText: 'Queue full' });
+  assert.equal(await panelQueueChip.count(), 1);
   assert.equal(await page.locator('.askeladds-oc-planner-role-cpr-eligible').count(), 0);
   await page.evaluate(() => {
     const old = document.querySelector('.native-join');
@@ -1001,6 +1088,7 @@ test('CPR mode restores Join at 48h without a request and follows replaced role 
   const requestCount = await page.evaluate(() => testCalls.length);
   await page.clock.fastForward(9_000);
   await lock.waitFor({ state: 'detached' });
+  assert.equal(await panelQueueChip.count(), 0, 'threshold crossing also clears expanded panel guidance');
   assert.equal(await page.locator('.native-join').isEnabled(), true);
   await page.locator('.native-join').click();
   assert.equal(await page.evaluate(() => nativeJoins), 1);
