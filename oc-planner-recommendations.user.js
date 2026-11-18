@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.79
+// @version      0.2.80
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.79";
+	const SCRIPT_VERSION = "0.2.80";
 	const PAYLOAD_CACHE_VERSION = 14;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
@@ -2170,6 +2170,34 @@
 		}
 		return undefined;
 	};
+	const crimeParticipationRank = (card, id) => {
+		const headers = [...card.querySelectorAll(NATIVE_ROLE_HEADER)].filter(header =>
+			isVisibleElement(header) && (!card.matches(NATIVE_CRIME) || header.closest(NATIVE_CRIME) === card));
+		if (!headers.length) {
+			const saved = state.lastPayload?.crimeSortInfoById?.[id]?.hasJoinedMembers;
+			return saved === true ? 0 : saved === false ? 2 : 1;
+		}
+		const positions = new Set();
+		let complete = true;
+		for (const header of headers) {
+			const position = getRoleTitleText(header);
+			const body = header.parentElement.querySelector(`:scope > ${NATIVE_ROLE_BODY}`);
+			if (!position || positions.has(position) || !body || !isVisibleElement(body)) {
+				complete = false;
+				continue;
+			}
+			positions.add(position);
+			// Occupancy is independent of progress: a fully planned member and
+			// a member whose progress is missing still count as already joined.
+			const occupant = getRoleOccupant(body, false);
+			if (occupant && (occupant.id > 0 || occupant.name)) return 0;
+			if (!body.querySelector(NATIVE_JOIN_CONTAINER)) complete = false;
+		}
+		const expected = state.lastPayload?.queueSlotsByCrime?.[id] || [];
+		if (expected.some(slot => !positions.has(normalizeRoleName(slot.position)))) complete = false;
+		// An unfamiliar or incomplete lineup must never masquerade as empty.
+		return complete ? 2 : 1;
+	};
 	const compareKnownSortValue = (left, right, descending = false) => {
 		if (left === undefined) return right === undefined ? 0 : 1;
 		if (right === undefined) return -1;
@@ -2204,13 +2232,37 @@
 		for (const [parent, group] of groups) {
 			if (group.length < 2 || new Set(group.map(entry => entry.item)).size !== group.length) continue;
 			const items = new Set(group.map(entry => entry.item));
-			// Never re-layout a toolbar, heading or pagination alongside the cards.
-			if ([...parent.children].some(child => !items.has(child) && !child.matches("style, script, template") && !child.hidden)) continue;
 			const children = [...parent.children];
+			const visible = children.filter(child => isVisibleElement(child) && !child.matches("style, script, template"));
+			const firstCard = visible.findIndex(child => items.has(child));
+			const lastCard = visible.reduce((last, child, index) => items.has(child) ? index : last, -1);
+			if (firstCard < 0 || visible.slice(firstCard, lastCard + 1).some(child => !items.has(child))) continue;
+			const layout = getComputedStyle(parent);
+			const grid = layout.display === "grid" || layout.display === "inline-grid";
+			const hasControls = visible.some(child => !items.has(child));
+			// Torn can put tabs, filters and Spawn above the cards, with a load-more
+			// control below. Support that vertical stack without moving any control
+			// into the card run or changing its native DOM position or handlers.
+			const vertical = ["block", "flow-root"].includes(layout.display) ||
+				(["flex", "inline-flex"].includes(layout.display) && layout.flexDirection === "column") ||
+				(grid && /^\d+(?:\.\d+)?px$/.test(layout.gridTemplateColumns.trim()));
+			if (hasControls && !vertical) continue;
+			if (hasControls) {
+				const positioned = visible.some(child => {
+					const css = getComputedStyle(child);
+					return css.cssFloat !== "none" || ["absolute", "fixed"].includes(css.position);
+				});
+				// A block container can still contain a row of inline controls.
+				// Check visual flow rather than DOM order, which our card ordering
+				// intentionally leaves untouched between foreground updates.
+				const rectangles = visible.map(child => child.getBoundingClientRect()).sort((a, b) => a.top - b.top || a.left - b.left);
+				if (positioned || rectangles.some((rect, index) => index > 0 && rect.top < rectangles[index - 1].bottom - 1)) continue;
+			}
 			const original = group.map(entry => {
 				const doneAt = effectiveJoinedPlanningDoneAt.get(entry.id);
 				return { ...entry, index: children.indexOf(entry.item),
 					joinable: crimeHasJoinableRole(entry.card, entry.id, candidates, roleStates, now),
+					participation: state.sortMode === "joinable" ? crimeParticipationRank(entry.card, entry.id) : 1,
 					remaining: Number.isFinite(doneAt) ? Math.max(0, doneAt - now) : undefined,
 					difficulty: crimeSortDifficulty(entry.card, entry.id, candidates) };
 			});
@@ -2219,18 +2271,19 @@
 					return compareKnownSortValue(a.difficulty, b.difficulty, state.sortMode === "tier-desc") || a.index - b.index;
 				}
 				return (state.sortMode === "joinable" ? Number(b.joinable) - Number(a.joinable) : 0) ||
+					(state.sortMode === "joinable" ? a.participation - b.participation : 0) ||
 					compareKnownSortValue(a.remaining, b.remaining) || a.index - b.index;
 			});
 			if (sorted.every((entry, index) => entry.item === original[index].item)) continue;
-			const display = getComputedStyle(parent).display;
-			const grid = display === "grid" || display === "inline-grid";
 			if (!grid) {
 				style(parent, "display", "flex");
 				style(parent, "flex-direction", "column");
 			}
 			const flow = grid ? "grid-order" : "flex-visual";
 			if (window.CSS?.supports("reading-flow", flow)) style(parent, "reading-flow", flow);
-			sorted.forEach((entry, index) => style(entry.item, "order", String(index)));
+			const cardPositions = original.map(entry => entry.index).sort((a, b) => a - b);
+			children.forEach((child, index) => style(child, "order", String(index)));
+			sorted.forEach((entry, index) => style(entry.item, "order", String(cardPositions[index])));
 		}
 		applySortingStyles(desired);
 	};
@@ -3601,7 +3654,11 @@
 			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueWarningHours, false),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			joinedPlanningDoneAtByCrime: buildJoinedPlanningDoneAtByCrime(planner, recommendationMode),
-			crimeSortInfoById: Object.fromEntries((planner.crimes || []).map(crime => [String(crime.id), { difficulty: crime.difficulty }])),
+			crimeSortInfoById: Object.fromEntries((planner.crimes || []).map(crime => [String(crime.id), {
+				difficulty: crime.difficulty,
+				hasJoinedMembers: Array.isArray(crime.slots) && crime.slots.length
+					? crime.slots.some(slot => !!(slot.currentUserId || slot.currentUserName)) : undefined,
+			}])),
 			sortEligibleSlots: findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements),
 			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
 				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements)
@@ -4378,7 +4435,7 @@
 				</div>
 				<div class="ocp-actions">
 					<label class="ocp-sort-control">Sort
-						<select class="ocp-sort" aria-label="Sort OCs" title="Joinable first puts OCs with an available eligible role ahead of the others, then sorts by shortest joined planning remaining.">
+						<select class="ocp-sort" aria-label="Sort OCs" title="Joinable first, then OCs with members before empty ones, then shortest joined planning remaining.">
 							${SORT_OPTIONS.map(([mode, label]) => `<option value="${mode}"${state.sortMode === mode ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
 						</select>
 					</label>

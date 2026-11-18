@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime, savedSort } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime, savedSort, cachedPayload } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -29,7 +29,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
   // Every browser request is intercepted. No live Torn/backend traffic or real keys.
   await context.route('**/*', request => request.fulfill({ contentType: 'text/html', body: html }));
   await page.goto(url);
-  await page.evaluate(({ saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort }) => {
+  await page.evaluate(({ saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort, cachedPayload }) => {
     const key = 'test-only';
     const profile = { player_id: 123, name: 'Test member', faction: { faction_id: 41309 } };
     const payload = {
@@ -39,6 +39,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
       cprEligibleSlots: cpr ? [{ crimeId: 101, crimeName: 'Test OC', role: 'Driver', position: 'Driver' }] : [],
       cprMemberStatus: 'eligible', cprOpenSlotCount: 1, cprIneligibleCount: 0, cprMissingCount: 0,
     };
+    Object.assign(payload, cachedPayload || {});
     const cache = new Map();
     if (savedSort !== undefined) cache.set('askeladds_oc_planner_sort', savedSort);
     if (saved) {
@@ -78,7 +79,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     };
     window.nativeJoins = 0;
     document.querySelector('.native-join')?.addEventListener('click', () => { window.nativeJoins++; });
-  }, { saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort });
+  }, { saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort, cachedPayload });
   await page.addScriptTag({ content: source });
   return page;
 }
@@ -1468,3 +1469,226 @@ test('a Crimes SPA navigation while blurred waits for focus before activating, r
     '/api/v1/factions/41309/oc-planner/script-access',
   ], 'returning to focus performs only the existing planner/check-in requests, not another Torn lookup');
 });
+
+function occupiedSortingFixture({ busy = false } = {}) {
+  const specs = [
+    { id: 201, tier: 9 },
+    { id: 202, tier: 8, occupant: 77, progress: .75 },
+    { id: 203, tier: 7, occupant: 78, progress: 1 },
+    { id: 204, tier: 6, occupant: 79, progress: undefined },
+    { id: 205, tier: 5, blocked: true },
+    { id: 206, tier: 4, occupant: 80, progress: .875, blocked: true },
+    { id: 207, tier: 3, disabled: true },
+  ];
+  const snapshot = liveQueueSnapshot('cpr', specs.map(spec => ({
+    id: spec.id,
+    slots: [spec.occupant ? occupiedQueueSlot('Driver', spec.occupant, spec.progress) : { position: 'Driver' },
+      { ...targetQueueSlot, minimumRecommendedCpr: spec.blocked ? 85 : 65, maximumRecommendedCpr: 100 }],
+  })));
+  snapshot.planner.crimes.forEach(crime => { crime.difficulty = specs.find(spec => spec.id === crime.id).tier; });
+  const makeCard = spec => nativeCrime(spec.id, [
+    nativeRole('Driver', 75, spec.occupant
+      ? { occupant: spec.occupant, planningDegrees: spec.progress === undefined ? undefined : spec.progress * 360 }
+      : { disabled: busy }),
+    nativeRole('Muscle #2', 80, { disabled: busy || !!spec.disabled }),
+  ]);
+  return { html: fixture.replace(crime, specs.map(makeCard).join('')), plannerSnapshot: snapshot,
+    saved: true, cpr: true, clockTime: queueTime, nativeOrder: specs.map(spec => spec.id) };
+}
+
+test('default occupancy sorting keeps joined OCs above empty zero-wait OCs within each joinability group', async t => {
+  const page = await open(t, occupiedSortingFixture());
+  await expectCrimeOrder(page, [203, 202, 204, 201, 206, 205, 207]);
+  assert.equal(await (await sortControl(page)).inputValue(), 'joinable');
+  assert.equal(await page.locator('[data-oc-id="203"] [data-fixture-role="Driver"] a').count(), 1,
+    'a fully planned member still counts as a joined member');
+  assert.equal(await page.locator('[data-oc-id="204"] [data-fixture-role="Driver"] a').count(), 1,
+    'missing planning progress never makes a known member count as an empty role');
+  assert.equal(await page.locator('[data-oc-id="201"] [data-fixture-role="Muscle #2"] button').isEnabled(), true,
+    'the refinement does not block the empty OC');
+  assert.equal(await page.locator('[data-oc-id="206"] [data-fixture-role="Muscle #2"] button').isDisabled(), true,
+    'joined members never override CPR restrictions or joinability grouping');
+});
+
+test('already being in an OC still places joined OCs before all empty zero-wait OCs', async t => {
+  const page = await open(t, occupiedSortingFixture({ busy: true }));
+  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await page.screenshot({ path: join(__dirname, '../test-results/sorting-occupied-already-in-oc.png'), fullPage: true });
+  assert.equal(await page.locator('[data-oc-id] button:enabled').count(), 0,
+    'Torn disables every Join in this already-in-an-OC fixture');
+  const requests = await page.evaluate(() => testCalls.length);
+  const control = await sortControl(page);
+  await control.selectOption('native');
+  await expectCrimeOrder(page, [201, 202, 203, 204, 205, 206, 207]);
+  await control.selectOption('joinable');
+  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  assert.equal(await page.evaluate(() => testReadSortPreference()), 'joinable');
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('occupancy refinement leaves shortest-planning, tier and native sorting choices unchanged', async t => {
+  const data = occupiedSortingFixture();
+  const page = await open(t, { ...data, savedSort: 'joinable' });
+  await expectCrimeOrder(page, [203, 202, 204, 201, 206, 205, 207]);
+  const control = await sortControl(page);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.evaluate(() => { window.occupiedSortOriginalNodes = [...document.querySelectorAll('[data-oc-id]')]; });
+  for (const [mode, expected] of [
+    ['planning', [201, 203, 205, 207, 206, 202, 204]],
+    ['tier-desc', data.nativeOrder],
+    ['tier-asc', [...data.nativeOrder].reverse()],
+    ['native', data.nativeOrder],
+    ['joinable', [203, 202, 204, 201, 206, 205, 207]],
+  ]) {
+    await control.selectOption(mode);
+    await expectCrimeOrder(page, expected);
+    assert.equal(await page.evaluate(() => testReadSortPreference()), mode);
+    assert.equal(await page.evaluate(() => occupiedSortOriginalNodes.every(node => node.isConnected)), true);
+  }
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('default occupancy sorting follows the first member joining and the last member leaving without requests', async t => {
+  const snapshot = liveQueueSnapshot('cpr', [
+    { id: 301, slots: [{ position: 'Driver' }, targetQueueSlot] },
+    { id: 302, slots: [occupiedQueueSlot('Driver', 77, .75), targetQueueSlot] },
+    { id: 303, slots: [{ position: 'Driver' }, targetQueueSlot] },
+  ]);
+  const html = fixture.replace(crime,
+    nativeCrime(301, [nativeRole('Driver', 75), nativeRole('Muscle #2', 80)]) +
+    nativeCrime(302, [nativeRole('Driver', 75, { occupant: 77, planningDegrees: 270 }), nativeRole('Muscle #2', 80)]) +
+    nativeCrime(303, [nativeRole('Driver', 75), nativeRole('Muscle #2', 80)]));
+  const page = await open(t, { html, plannerSnapshot: snapshot, saved: true, cpr: true, clockTime: queueTime });
+  await page.evaluate(now => { Date.now = () => now; }, Date.parse(queueTime));
+  await expectCrimeOrder(page, [302, 301, 303]);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.locator('[data-oc-id="303"] [data-fixture-role="Driver"]').evaluate((role, html) => { role.outerHTML = html; },
+    nativeRole('Driver', 75, { occupant: 88, planningDegrees: 315 }));
+  await expectCrimeOrder(page, [303, 302, 301]);
+  await page.locator('[data-oc-id="303"] [data-fixture-role="Driver"]').evaluate((role, html) => { role.outerHTML = html; }, nativeRole('Driver', 75));
+  await expectCrimeOrder(page, [302, 301, 303]);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('incomplete live member data stays between occupied and confirmed-empty OCs instead of trusting an old empty snapshot', async t => {
+  const snapshot = liveQueueSnapshot('cpr', [
+    { id: 401, slots: [{ position: 'Driver' }, targetQueueSlot] },
+    { id: 402, slots: [{ position: 'Driver' }, targetQueueSlot] },
+    { id: 403, slots: [occupiedQueueSlot('Driver', 77, .75), targetQueueSlot] },
+  ]);
+  const uncertainDriver = nativeRole('Driver', 75).replace(/<div class="joinContainer___h0">[\s\S]*?<\/div><\/div>/,
+    '<span>Member details are loading</span>');
+  const html = fixture.replace(crime,
+    nativeCrime(401, [nativeRole('Driver', 75), nativeRole('Muscle #2', 80)]) +
+    nativeCrime(402, [uncertainDriver, nativeRole('Muscle #2', 80)]) +
+    nativeCrime(403, [nativeRole('Driver', 75, { occupant: 77, planningDegrees: 270 }), nativeRole('Muscle #2', 80)]));
+  const page = await open(t, { html, plannerSnapshot: snapshot, saved: true, cpr: true, clockTime: queueTime });
+  await expectCrimeOrder(page, [403, 402, 401]);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.locator('[data-oc-id="402"] [data-fixture-role="Driver"]').evaluate((role, html) => { role.outerHTML = html; }, nativeRole('Driver', 75));
+  await expectCrimeOrder(page, [403, 401, 402]);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('older cached zero planning time never proves an OC is empty when member data is unknown', async t => {
+  const unknownCard = `<article data-oc-id="502"><h3>Test OC</h3>
+    <div class="slot"><span class="title">Driver</span><button class="native-join" disabled>Join</button></div></article>`;
+  const html = fixture.replace(crime,
+    nativeCrime(501, [nativeRole('Driver', 75, { disabled: true }), nativeRole('Muscle #2', 80, { disabled: true })]) +
+    unknownCard +
+    nativeCrime(503, [nativeRole('Driver', 75, { occupant: 77, planningDegrees: 270 }), nativeRole('Muscle #2', 80, { disabled: true })]));
+  const page = await open(t, { html, saved: true, cpr: true, clockTime: queueTime,
+    cachedPayload: { cprEligibleSlots: [], joinedPlanningDoneAtByCrime: { 501: 0, 502: 0, 503: queueNow + 6 * 3600 } } });
+  await expectCrimeOrder(page, [503, 502, 501]);
+  assert.equal((await page.evaluate(() => testCalls)).filter(path => path === '/user/').length, 0,
+    'the older usable personal cache does not trigger another Torn lookup');
+  assert.equal(await (await sortControl(page)).inputValue(), 'joinable');
+});
+
+test('occupied sorting handles Torn tabs, filter, spawn controls and footer around a contiguous card list', async t => {
+  const data = occupiedSortingFixture({ busy: true });
+  data.html = data.html.replace('<div id="faction-crimes-root">', `<div id="faction-crimes-root">
+    <div id="sorting-tabs"><button>Recruiting</button><button>Planning</button></div>
+    <div id="sorting-filter"><label>OC Filter <input aria-label="Fixture OC filter"></label></div>
+    <div id="sorting-spawn"><button id="sorting-native-spawn">Spawn scenario</button></div>`)
+    .replace('</div></div></main>', '<footer id="sorting-footer"><button>Load more</button></footer></div></div></main>');
+  const page = await open(t, data);
+  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await page.screenshot({ path: join(__dirname, '../test-results/sorting-occupied-with-controls.png'), fullPage: true });
+  const requests = await page.evaluate(() => testCalls.length);
+  const layout = () => page.evaluate(() => {
+    const rect = id => document.getElementById(id).getBoundingClientRect();
+    const cards = [...document.querySelectorAll('#faction-crimes-root > [data-oc-id]')].map(card => card.getBoundingClientRect());
+    return { tabs: rect('sorting-tabs').top, filter: rect('sorting-filter').top, spawn: rect('sorting-spawn').top,
+      firstCard: Math.min(...cards.map(card => card.top)), lastCard: Math.max(...cards.map(card => card.bottom)),
+      footer: rect('sorting-footer').top };
+  });
+  let positions = await layout();
+  assert.ok(positions.tabs < positions.filter && positions.filter < positions.spawn && positions.spawn < positions.firstCard);
+  assert.ok(positions.lastCard <= positions.footer);
+  await page.evaluate(() => {
+    window.occupiedControlNodes = ['sorting-tabs', 'sorting-filter', 'sorting-spawn', 'sorting-footer'].map(id => document.getElementById(id));
+    window.occupiedSpawnClicks = 0;
+    document.getElementById('sorting-native-spawn').addEventListener('click', () => { window.occupiedSpawnClicks++; });
+  });
+  const control = await sortControl(page);
+  await control.selectOption('native');
+  await expectCrimeOrder(page, data.nativeOrder);
+  await control.selectOption('joinable');
+  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  positions = await layout();
+  assert.ok(positions.spawn < positions.firstCard && positions.lastCard <= positions.footer);
+  assert.equal(await page.evaluate(() => occupiedControlNodes.every(node => node.isConnected)), true);
+  await page.locator('#sorting-native-spawn').click();
+  assert.equal(await page.evaluate(() => occupiedSpawnClicks), 1);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('sorting does not move cards across a visible control interleaved within the list', async t => {
+  const data = occupiedSortingFixture({ busy: true });
+  data.html = data.html.replace('<article data-oc-id="202">', '<div id="interleaved-native-control"><button>Native action</button></div><article data-oc-id="202">');
+  const page = await open(t, data);
+  await sortControl(page);
+  await page.waitForTimeout(350);
+  await expectCrimeOrder(page, data.nativeOrder);
+  const between = await page.locator('#interleaved-native-control').evaluate(control => {
+    const first = document.querySelector('[data-oc-id="201"]').getBoundingClientRect();
+    const second = document.querySelector('[data-oc-id="202"]').getBoundingClientRect();
+    const middle = control.getBoundingClientRect();
+    return first.bottom <= middle.top && middle.bottom <= second.top;
+  });
+  assert.equal(between, true);
+});
+
+for (const [layoutName, controls] of [
+  ['inline', '<span id="unsafe-control-one">Recruiting</span><span id="unsafe-control-two">Planning</span>'],
+  ['floating', '<div id="unsafe-control-one" style="float:left">Recruiting</div><div id="unsafe-control-two" style="float:right">Planning</div>'],
+]) {
+  test(`sorting preserves a native ${layoutName} leading-control row instead of converting it to a column`, async t => {
+    const data = occupiedSortingFixture({ busy: true });
+    data.html = data.html.replace('<div id="faction-crimes-root">', `<div id="faction-crimes-root">${controls}`);
+    const page = await open(t, data);
+    await page.waitForFunction(() => testReadMemberPayload()?.payload.plannerRunId === 'live-queue-run');
+    await expectCrimeOrder(page, data.nativeOrder);
+    const requests = await page.evaluate(() => testCalls.length);
+    const inspect = () => page.evaluate(() => ({
+      nodes: ['unsafe-control-one','unsafe-control-two'].map(id => {
+        const node = document.getElementById(id), rect = node.getBoundingClientRect(), style = getComputedStyle(node);
+        return { id, top: rect.top, left: rect.left, display: style.display, float: style.cssFloat };
+      }),
+      listDisplayOverride: document.getElementById('faction-crimes-root').style.display,
+    }));
+    const before = await inspect();
+    assert.equal(before.listDisplayOverride, '', 'the mixed native list keeps its display mode');
+    assert.equal(before.nodes[0].top, before.nodes[1].top, 'the controls remain side by side');
+    if (layoutName === 'floating') assert.deepEqual(before.nodes.map(node => node.float), ['left','right']);
+    await page.evaluate(() => { window.unsafeOriginalControls = ['unsafe-control-one','unsafe-control-two'].map(id => document.getElementById(id)); });
+    const control = await sortControl(page);
+    await control.selectOption('native');
+    await control.selectOption('joinable');
+    await expectCrimeOrder(page, data.nativeOrder);
+    assert.deepEqual(await inspect(), before, 'sorting does not rearrange the native control row');
+    assert.equal(await page.evaluate(() => unsafeOriginalControls.every(node => node.isConnected)), true);
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+  });
+}

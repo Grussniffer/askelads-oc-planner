@@ -40,21 +40,23 @@ On Torn's OC list, each reserved assignment is labelled with the role and the OC
 
 ## OC sorting
 
-The **Sort** dropdown remains available in the OC Planner header, including when the panel is collapsed. Its default is **Joinable first, shortest wait**: OCs with at least one eligible role you can currently join come first, ordered by their shortest remaining joined-member planning time. OCs without a joinable role follow afterward. A blocked OC with a shorter queue does not jump ahead of a joinable OC.
+The **Sort** dropdown remains available in the OC Planner header, including when the panel is collapsed. Its default is **Joinable first, shortest wait**: OCs with at least one eligible role you can currently join come first. Within each joinability group, OCs with members already joined come before completely empty OCs, then shorter remaining joined-member planning comes first. Unknown participation stays between confirmed occupied and confirmed empty OCs. A blocked OC with a shorter queue does not jump ahead of a joinable OC.
 
 | Option | Order |
 | --- | --- |
-| Joinable first, shortest wait | Joinable OCs first; shortest remaining joined planning within each group. |
+| Joinable first, shortest wait | Joinable OCs first; occupied before empty within each group, then shortest remaining joined planning. |
 | Torn's order | Restore Torn's original card order. |
 | Shortest planning | Shortest remaining joined planning across all OCs, including ones you cannot join. |
 | Highest tier first | Highest known OC difficulty first. |
 | Lowest tier first | Lowest known OC difficulty first. |
 
-Unknown planning time or difficulty goes after known values, and equal values preserve Torn's order. Joinability respects personal recommendations or CPR eligibility, occupied roles, future availability, the faction's queue rules and exceptions, and Torn's own Join restrictions. Planning time describes the work already queued by joined members; it is not a promise that an OC will start then, because its remaining roles still need filling.
+If you are already in an OC, Torn can disable every Join button. The default then puts OCs with people in them ahead of empty OCs, instead of promoting empty zero-hour queues. A member still counts as joined when their planning is complete or progress is unavailable. Live first joins and last departures update the order without a request. The Shortest planning, tier and Torn's order options keep their existing behavior.
+
+Unknown planning time or difficulty goes after known values within its group, and equal values preserve Torn's order. Joinability respects personal recommendations or CPR eligibility, occupied roles, future availability, the faction's queue rules and exceptions, and Torn's own Join restrictions. Planning time describes the work already queued by joined members; it is not a promise that an OC will start then, because its remaining roles still need filling.
 
 The choice is saved locally using userscript storage, falling back to browser local storage in Torn PDA. It survives refreshes and does not change the faction's admin settings. Sorting uses existing personal snapshot data and foreground live-card updates, with no extra Torn or backend API calls. Optional sorting metadata arrives with normal snapshots; older cached snapshots still use their existing role candidates and available native tier labels.
 
-Sorting changes visual order on verified sibling-card lists without moving Torn's DOM nodes, replacing Join buttons, or changing their actions. Mixed lists containing visible toolbars, headings or pagination are left alone. Live joins, leaves and progress update the order while the Crimes tab is visible and focused; Torn PDA uses visibility because its focus reporting differs. Returning to the page applies pending changes. Choosing Torn's order or leaving the Crimes tab restores the script's layout changes.
+Sorting changes visual order on verified sibling-card lists without moving Torn's DOM nodes, replacing Join buttons, or changing their actions. A contiguous card list can retain filters, spawn controls or pagination before and after it: those controls keep their original positions while the cards sort within their existing section. Interleaved controls or an unrecognized layout retain their native order. Live joins, leaves and progress update the order while the Crimes tab is visible and focused; Torn PDA uses visibility because its focus reporting differs. Returning to the page applies pending changes. Choosing Torn's order or leaving the Crimes tab restores the script's layout changes.
 
 ## Recommendations and eligibility
 
