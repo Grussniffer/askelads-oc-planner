@@ -40,17 +40,17 @@ On Torn's OC list, each reserved assignment is labelled with the role and the OC
 
 ## OC sorting
 
-The **Sort** dropdown remains available in the OC Planner header, including when the panel is collapsed. Its default is **Joinable first, shortest wait**: OCs with at least one eligible role you can currently join come first. Within each joinability group, OCs with members already joined come before completely empty OCs, then shorter remaining joined-member planning comes first. Unknown participation stays between confirmed occupied and confirmed empty OCs. A blocked OC with a shorter queue does not jump ahead of a joinable OC.
+The **Sort** dropdown remains available in the OC Planner header, including when the panel is collapsed. **Joinable first, shortest wait** is the default. OCs with at least one eligible role you can currently join come first. Within each group, OCs with members already joined come before empty OCs, followed by shortest remaining planning time. Unknown participation stays between confirmed occupied and confirmed empty OCs.
 
 | Option | Order |
 | --- | --- |
-| Joinable first, shortest wait | Joinable OCs first; occupied before empty within each group, then shortest remaining joined planning. |
+| Joinable first, shortest wait | Joinable OCs first, or open CPR matches first if nothing is joinable. Within each group, occupied OCs come before empty ones, followed by shortest remaining planning. |
 | Torn's order | Restore Torn's original card order. |
 | Shortest planning | Shortest remaining joined planning across all OCs, including ones you cannot join. |
 | Highest tier first | Highest known OC difficulty first. |
 | Lowest tier first | Lowest known OC difficulty first. |
 
-If you are already in an OC, Torn can disable every Join button. The default then puts OCs with people in them ahead of empty OCs, instead of promoting empty zero-hour queues. A member still counts as joined when their planning is complete or progress is unavailable. Live first joins and last departures update the order without a request. The Shortest planning, tier and Torn's order options keep their existing behavior.
+When no listed OC has a role you can join, such as while you are already in an OC, the default gives priority to OCs with an open role that matches your CPR. In Complete plan mode the role must be assigned to you or marked Any free. Within that priority, OCs with people already in them come first, then shorter remaining planning. A member still counts as joined when their planning is complete or progress is unavailable. Live joins and departures update the order without a request. Torn continues to control its Join buttons.
 
 Unknown planning time or difficulty goes after known values within its group, and equal values preserve Torn's order. Joinability respects personal recommendations or CPR eligibility, occupied roles, future availability, the faction's queue rules and exceptions, and Torn's own Join restrictions. Planning time describes the work already queued by joined members; it is not a promise that an OC will start then, because its remaining roles still need filling.
 

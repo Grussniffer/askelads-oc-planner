@@ -1474,7 +1474,7 @@ function occupiedSortingFixture({ busy = false } = {}) {
   const specs = [
     { id: 201, tier: 9 },
     { id: 202, tier: 8, occupant: 77, progress: .75 },
-    { id: 203, tier: 7, occupant: 78, progress: 1 },
+    { id: 203, tier: 7, occupant: busy ? 123 : 78, progress: 1 },
     { id: 204, tier: 6, occupant: 79, progress: undefined },
     { id: 205, tier: 5, blocked: true },
     { id: 206, tier: 4, occupant: 80, progress: .875, blocked: true },
@@ -1510,9 +1510,11 @@ test('default occupancy sorting keeps joined OCs above empty zero-wait OCs withi
     'joined members never override CPR restrictions or joinability grouping');
 });
 
-test('already being in an OC still places joined OCs before all empty zero-wait OCs', async t => {
+const busyCrimeOrder = [203, 202, 204, 201, 207, 206, 205];
+
+test('when already in an OC, open CPR-eligible roles come first, then member participation and shortest planning', async t => {
   const page = await open(t, occupiedSortingFixture({ busy: true }));
-  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await expectCrimeOrder(page, busyCrimeOrder);
   await page.screenshot({ path: join(__dirname, '../test-results/sorting-occupied-already-in-oc.png'), fullPage: true });
   assert.equal(await page.locator('[data-oc-id] button:enabled').count(), 0,
     'Torn disables every Join in this already-in-an-OC fixture');
@@ -1521,9 +1523,41 @@ test('already being in an OC still places joined OCs before all empty zero-wait 
   await control.selectOption('native');
   await expectCrimeOrder(page, [201, 202, 203, 204, 205, 206, 207]);
   await control.selectOption('joinable');
-  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await expectCrimeOrder(page, busyCrimeOrder);
   assert.equal(await page.evaluate(() => testReadSortPreference()), 'joinable');
+
+  await page.locator('[data-oc-id="203"] [data-fixture-role="Muscle #2"]').evaluate((role, replacement) => {
+    role.outerHTML = replacement;
+  }, nativeRole('Muscle #2', 80, { occupant: 99, planningDegrees: 360 }));
+  await expectCrimeOrder(page, [202, 204, 201, 207, 203, 206, 205]);
+  assert.equal(await page.locator('[data-oc-id] button:enabled').count(), 0, 'sorting leaves Torn’s Join buttons disabled');
+
+  const availableJoin = page.locator('[data-oc-id="207"] [data-fixture-role="Muscle #2"] button');
+  await availableJoin.evaluate(button => { button.disabled = false; });
+  await expectCrimeOrder(page, [207, 203, 206, 202, 204, 201, 205]);
+  assert.equal(await page.locator('[data-oc-id] button:enabled').count(), 1, 'only Torn’s newly available Join is enabled');
   assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('complete-plan preview ranks a future assignment with suitable CPR ahead of roles reserved for other members', async t => {
+  const data = occupiedSortingFixture({ busy: true });
+  data.cpr = false;
+  data.plannerSnapshot.recommendationPolicy.mode = 'plan';
+  data.plannerSnapshot.planner.snapshotKind = 'plan';
+  for (const crime of data.plannerSnapshot.planner.crimes) {
+    for (const slot of crime.slots) {
+      if (typeof slot.currentProgress === 'number') slot.currentProgress *= 100;
+      if (slot.position === 'Muscle #2') slot.recommended = { anyFree: true };
+    }
+  }
+  const muscle = id => data.plannerSnapshot.planner.crimes.find(crime => crime.id === id).slots[1];
+  muscle(203).recommended = { memberId: 123, cpr: 80, available: 'soon', currentCrimeId: 203, availableAt: queueNow + 12 * 3600 };
+  muscle(202).recommended = { memberId: 456, cpr: 80 };
+  muscle(206).recommended = { ...muscle(203).recommended };
+
+  const page = await open(t, data);
+  await expectCrimeOrder(page, [203, 204, 201, 207, 206, 202, 205]);
+  assert.equal(await page.locator('[data-oc-id] button:enabled').count(), 0);
 });
 
 test('occupancy refinement leaves shortest-planning, tier and native sorting choices unchanged', async t => {
@@ -1613,7 +1647,7 @@ test('occupied sorting handles Torn tabs, filter, spawn controls and footer arou
     <div id="sorting-spawn"><button id="sorting-native-spawn">Spawn scenario</button></div>`)
     .replace('</div></div></main>', '<footer id="sorting-footer"><button>Load more</button></footer></div></div></main>');
   const page = await open(t, data);
-  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await expectCrimeOrder(page, busyCrimeOrder);
   await page.screenshot({ path: join(__dirname, '../test-results/sorting-occupied-with-controls.png'), fullPage: true });
   const requests = await page.evaluate(() => testCalls.length);
   const layout = () => page.evaluate(() => {
@@ -1635,7 +1669,7 @@ test('occupied sorting handles Torn tabs, filter, spawn controls and footer arou
   await control.selectOption('native');
   await expectCrimeOrder(page, data.nativeOrder);
   await control.selectOption('joinable');
-  await expectCrimeOrder(page, [203, 206, 202, 204, 201, 205, 207]);
+  await expectCrimeOrder(page, busyCrimeOrder);
   positions = await layout();
   assert.ok(positions.spawn < positions.firstCard && positions.lastCard <= positions.footer);
   assert.equal(await page.evaluate(() => occupiedControlNodes.every(node => node.isConnected)), true);

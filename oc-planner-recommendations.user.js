@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.80
+// @version      0.2.81
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.80";
+	const SCRIPT_VERSION = "0.2.81";
 	const PAYLOAD_CACHE_VERSION = 14;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
@@ -2146,6 +2146,11 @@
 			? [...(payload.cprEligibleSlots || []), ...(payload.queueFallbackCandidates || [])]
 			: [...(payload.recommendations || []), ...(payload.flexibleSlots || [])])];
 	};
+	const sortCprCandidates = payload => {
+		if (!payload || payload.noPlan) return [];
+		if (payload.recommendationMode === "plan") return payload.sortCprEligibleSlots || payload.flexibleSlots || [];
+		return [...(payload.sortEligibleSlots || []), ...(payload.cprEligibleSlots || []), ...(payload.queueFallbackCandidates || [])];
+	};
 	const crimeHasJoinableRole = (card, id, candidates, roleStates, now) => candidates.some(slot => {
 		if (String(slot.crimeId) !== id || getQueueLock(slot) || roleStates.get(queueRoleKey(slot))?.attribute) return false;
 		if (Number(slot.availableAt) > now || ((slot.available === "soon" || slot.currentCrimeId) && !slot.availableAt)) return false;
@@ -2227,7 +2232,9 @@
 			desired.get(element).set(property, value);
 		};
 		const candidates = sortEligibleCandidates();
-		const roleStates = getNativeRoleStates();
+		const joinableFirst = state.sortMode === "joinable";
+		const roleStates = joinableFirst ? getNativeRoleStates() : new Map();
+		const cprCandidates = joinableFirst ? sortCprCandidates(state.lastPayload) : [];
 		const now = Math.floor(Date.now() / 1000);
 		for (const [parent, group] of groups) {
 			if (group.length < 2 || new Set(group.map(entry => entry.item)).size !== group.length) continue;
@@ -2261,17 +2268,26 @@
 			const original = group.map(entry => {
 				const doneAt = effectiveJoinedPlanningDoneAt.get(entry.id);
 				return { ...entry, index: children.indexOf(entry.item),
-					joinable: crimeHasJoinableRole(entry.card, entry.id, candidates, roleStates, now),
-					participation: state.sortMode === "joinable" ? crimeParticipationRank(entry.card, entry.id) : 1,
+					joinable: joinableFirst && crimeHasJoinableRole(entry.card, entry.id, candidates, roleStates, now),
+					participation: joinableFirst ? crimeParticipationRank(entry.card, entry.id) : 1,
 					remaining: Number.isFinite(doneAt) ? Math.max(0, doneAt - now) : undefined,
 					difficulty: crimeSortDifficulty(entry.card, entry.id, candidates) };
 			});
+			// If Torn offers no usable Join, show suitable open positions for the next OC.
+			// The lookup accepts disabled Join controls and never changes them.
+			if (joinableFirst && !original.some(entry => entry.joinable)) {
+				for (const entry of original) {
+					entry.cprEligible = cprCandidates.some(slot => String(slot.crimeId) === entry.id &&
+						findRoleJoinTarget(slot, entry.card));
+				}
+			}
 			const sorted = [...original].sort((a, b) => {
 				if (state.sortMode === "tier-asc" || state.sortMode === "tier-desc") {
 					return compareKnownSortValue(a.difficulty, b.difficulty, state.sortMode === "tier-desc") || a.index - b.index;
 				}
-				return (state.sortMode === "joinable" ? Number(b.joinable) - Number(a.joinable) : 0) ||
-					(state.sortMode === "joinable" ? a.participation - b.participation : 0) ||
+				return Number(b.joinable) - Number(a.joinable) ||
+					Number(!!b.cprEligible) - Number(!!a.cprEligible) ||
+					a.participation - b.participation ||
 					compareKnownSortValue(a.remaining, b.remaining) || a.index - b.index;
 			});
 			if (sorted.every((entry, index) => entry.item === original[index].item)) continue;
@@ -3582,7 +3598,7 @@
 		return result;
 	};
 
-	const findQueueFallbackCandidates = (planner, memberId, mode, cprRequirements) => {
+	const findQueueFallbackCandidates = (planner, memberId, mode, cprRequirements, forCprSort = false) => {
 		const candidates = [];
 		for (const crime of planner.crimes || []) {
 			if (normalizeText(crime.status) !== "recruiting" || !/^\d+$/.test(String(crime.id || ""))) continue;
@@ -3590,14 +3606,13 @@
 				const position = slot.position || slot.role;
 				if (!position) continue;
 				const assigned = slot.recommended;
-				let availableAt;
-				if (mode === "cpr" || assigned?.anyFree) {
+				const personalAssignment = mode === "plan" && !assigned?.anyFree;
+				if (personalAssignment && Number(assigned?.memberId) !== memberId) continue;
+				const availableAt = personalAssignment ? assigned.availableAt : undefined;
+				if (personalAssignment && !forCprSort && (assigned.available === "soon" || assigned.currentCrimeId) && !availableAt) continue;
+				if (!personalAssignment || forCprSort) {
 					const cpr = getMemberCprForSlot(planner, memberId, crime, slot);
 					if (!memberFitsSlotBand(cpr, slot, crime, cprRequirements)) continue;
-				} else {
-					if (Number(assigned?.memberId) !== memberId) continue;
-					availableAt = assigned.availableAt;
-					if ((assigned.available === "soon" || assigned.currentCrimeId) && !availableAt) continue;
 				}
 				candidates.push({
 					crimeId: crime.id, position, availableAt,
@@ -3632,6 +3647,7 @@
 				Number(member?.memberId || member?.playerId || member?.player_id || member?.id || 0) ===
 				memberId
 		);
+		const sortEligibleSlots = findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements);
 		const cprMemberStatus = recommendationMode !== "cpr"
 			? ""
 			: hasCprProfile
@@ -3659,10 +3675,11 @@
 				hasJoinedMembers: Array.isArray(crime.slots) && crime.slots.length
 					? crime.slots.some(slot => !!(slot.currentUserId || slot.currentUserName)) : undefined,
 			}])),
-			sortEligibleSlots: findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements),
+			sortEligibleSlots,
+			sortCprEligibleSlots: recommendationMode === "plan"
+				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements, true) : undefined,
 			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
-				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements)
-				: [],
+				? sortEligibleSlots : [],
 			recommendations,
 			hasAssignedRole: recommendations.length > 0,
 			planningSteps,
@@ -4435,7 +4452,7 @@
 				</div>
 				<div class="ocp-actions">
 					<label class="ocp-sort-control">Sort
-						<select class="ocp-sort" aria-label="Sort OCs" title="Joinable first, then OCs with members before empty ones, then shortest joined planning remaining.">
+						<select class="ocp-sort" aria-label="Sort OCs" title="Joinable roles first, or open CPR matches when you cannot join. Then OCs with members first and shortest planning.">
 							${SORT_OPTIONS.map(([mode, label]) => `<option value="${mode}"${state.sortMode === mode ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
 						</select>
 					</label>
