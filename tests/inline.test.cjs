@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime, savedSort } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -29,7 +29,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
   // Every browser request is intercepted. No live Torn/backend traffic or real keys.
   await context.route('**/*', request => request.fulfill({ contentType: 'text/html', body: html }));
   await page.goto(url);
-  await page.evaluate(({ saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion }) => {
+  await page.evaluate(({ saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort }) => {
     const key = 'test-only';
     const profile = { player_id: 123, name: 'Test member', faction: { faction_id: 41309 } };
     const payload = {
@@ -40,6 +40,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
       cprMemberStatus: 'eligible', cprOpenSlotCount: 1, cprIneligibleCount: 0, cprMissingCount: 0,
     };
     const cache = new Map();
+    if (savedSort !== undefined) cache.set('askeladds_oc_planner_sort', savedSort);
     if (saved) {
       cache.set('askeladds_oc_planner_api_key', key);
       cache.set('askeladds_oc_planner_profile', JSON.stringify({ keyCacheId: '9:test:only', profile, savedAt: new Date().toISOString() }));
@@ -57,6 +58,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     window.testProfileResponse = profile;
     window.testPlannerSnapshot = plannerSnapshot;
     window.testReadMemberPayload = () => JSON.parse(cache.get('askeladds_oc_planner_member_payload') || 'null');
+    window.testReadSortPreference = () => cache.get('askeladds_oc_planner_sort');
     window.GM_xmlhttpRequest = options => {
       const url = new URL(options.url);
       window.testCalls.push(url.pathname);
@@ -76,7 +78,7 @@ async function open(t, { url = route, html = fixture, saved = false, cpr = false
     };
     window.nativeJoins = 0;
     document.querySelector('.native-join')?.addEventListener('click', () => { window.nativeJoins++; });
-  }, { saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion });
+  }, { saved, cpr, deferProfile, deferPlanner, plannerSnapshot, cacheSchemaVersion, savedSort });
   await page.addScriptTag({ content: source });
   return page;
 }
@@ -1177,3 +1179,292 @@ for (const status of ['ready', 'missing', 'refreshing']) {
     assert.equal(await page.evaluate(() => nativeJoins), 0);
   });
 }
+
+// The visual order is the user-facing contract. A sorting implementation may
+// use layout order while leaving Torn's React-owned DOM and handlers intact.
+async function visualCrimeOrder(page) {
+  return page.locator('#faction-crimes-root > [data-oc-id]').evaluateAll(cards => cards
+    .map((card, index) => ({ id: Number(card.dataset.ocId), index, rect: card.getBoundingClientRect() }))
+    .filter(card => card.rect.width > 0 && card.rect.height > 0)
+    .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left || a.index - b.index)
+    .map(card => card.id));
+}
+
+async function expectCrimeOrder(page, expected) {
+  try { await page.waitForFunction(expected => {
+    const cards = [...document.querySelectorAll('#faction-crimes-root > [data-oc-id]')]
+      .map((card, index) => ({ id: Number(card.dataset.ocId), index, rect: card.getBoundingClientRect() }))
+      .filter(card => card.rect.width > 0 && card.rect.height > 0)
+      .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left || a.index - b.index)
+      .map(card => card.id);
+    return JSON.stringify(cards) === JSON.stringify(expected);
+  }, expected, { timeout: 5000 }); } catch (error) {
+    assert.deepEqual(await visualCrimeOrder(page), expected, `visual crime order did not settle: ${error.message}`);
+    throw error;
+  }
+  assert.deepEqual(await visualCrimeOrder(page), expected);
+}
+
+async function sortControl(page) {
+  const control = page.locator(`${panel} select.ocp-sort`);
+  await control.waitFor({ state: 'attached' });
+  if (!(await control.isVisible())) await page.locator(`${panel} .ocp-collapse`).click();
+  await control.waitFor();
+  return control;
+}
+
+function sortingFixture() {
+  const specifications = [
+    { id: 101, tier: 9, progress: 23 / 24, blocked: true },
+    { id: 102, tier: 3, progress: .25 },
+    { id: 103, tier: 8, progress: .75 },
+    { id: 104, tier: 2, progress: .875, disabled: true },
+    { id: 105, tier: 6, progress: 0, extraJoined: 2 },
+    { id: 106, tier: 5, progress: undefined },
+    { id: 107, tier: 1, progress: .9, occupied: true },
+    { id: 108, tier: 8, progress: .75 },
+  ];
+  const makeCard = spec => nativeCrime(spec.id, [
+    nativeRole('Driver', 75, { occupant: 77, planningDegrees: spec.progress === undefined ? undefined : spec.progress * 360 }),
+    ...Array.from({ length: spec.extraJoined || 0 }, (_, index) =>
+      nativeRole(['Lookout', 'Hacker'][index], 75, { occupant: 88 + index, planningDegrees: 0 })),
+    nativeRole('Muscle #2', 80, spec.occupied ? { occupant: 99, planningDegrees: 360 } : { disabled: !!spec.disabled }),
+  ]);
+  const snapshot = liveQueueSnapshot('cpr', specifications.map(spec => ({
+    id: spec.id,
+    slots: [
+      occupiedQueueSlot('Driver', 77, spec.progress),
+      ...Array.from({ length: spec.extraJoined || 0 }, (_, index) => occupiedQueueSlot(['Lookout', 'Hacker'][index], 88 + index, 0)),
+      spec.occupied ? occupiedQueueSlot('Muscle #2', 99, 1) : {
+        ...targetQueueSlot, minimumRecommendedCpr: spec.blocked ? 85 : 65, maximumRecommendedCpr: 100,
+      },
+    ],
+  })));
+  for (const crime of snapshot.planner.crimes) crime.difficulty = specifications.find(spec => spec.id === crime.id).tier;
+  return {
+    html: fixture.replace(crime, specifications.map(makeCard).join('')),
+    plannerSnapshot: snapshot, saved: true, cpr: true, clockTime: queueTime,
+    nativeOrder: specifications.map(spec => spec.id), makeCard,
+  };
+}
+
+for (const width of [1000, 375]) {
+test(`default sorting prioritizes a genuinely joinable role, then shortest joined planning, with unknown time last (${width}px)`, async t => {
+  const page = await open(t, { ...sortingFixture(), width });
+  await page.locator('[data-oc-id="105"] [data-ocp-queue-locked]').waitFor();
+  const control = await sortControl(page);
+  assert.equal(await control.inputValue(), 'joinable');
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  assert.equal(await page.locator('[data-oc-id="101"] [data-fixture-role="Muscle #2"] button').isDisabled(), true, 'CPR block is not joinable');
+  assert.equal(await page.locator('[data-oc-id="104"] [data-fixture-role="Muscle #2"] button').isDisabled(), true, 'Torn availability is not overridden by sorting');
+  assert.equal(await page.locator('[data-oc-id="105"] [data-fixture-role="Muscle #2"] button').isDisabled(), true, 'red queue block is not joinable');
+  assert.equal(await page.locator('[data-oc-id="107"] button').count(), 0, 'an occupied role does not count as joinable');
+  assert.equal(await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"] button').isEnabled(), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'the sort control does not add horizontal scrolling');
+  await page.screenshot({ path: join(__dirname, `../test-results/sorting-${width === 1000 ? 'desktop' : 'mobile'}.png`), fullPage: true });
+});
+}
+
+test('yellow long-planning roles remain in the joinable sorting group ahead of a faster blocked OC', async t => {
+  const snapshot = liveQueueSnapshot('cpr', [
+    { id: 101, slots: [{ ...targetQueueSlot, minimumRecommendedCpr: 85 }] },
+    { id: 102, slots: [occupiedQueueSlot('Driver', 77, .5), occupiedQueueSlot('Lookout', 88, 0), targetQueueSlot] },
+    { id: 103, slots: [occupiedQueueSlot('Driver', 77, .75), targetQueueSlot] },
+  ]);
+  const html = fixture.replace(crime,
+    nativeCrime(101, [nativeRole('Muscle #2', 80)]) +
+    nativeCrime(102, [nativeRole('Driver', 75, { occupant: 77, planningDegrees: 180 }), nativeRole('Lookout', 75, { occupant: 88, planningDegrees: 0 }), nativeRole('Muscle #2', 80)]) +
+    nativeCrime(103, [nativeRole('Driver', 75, { occupant: 77, planningDegrees: 270 }), nativeRole('Muscle #2', 80)]));
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  await page.locator('[data-oc-id="102"] .ocp-queue-warning-reason').waitFor();
+  assert.equal(await page.locator('[data-oc-id="102"] [data-fixture-role="Muscle #2"] button').isEnabled(), true);
+  await expectCrimeOrder(page, [103, 102, 101]);
+});
+
+test('complete-plan sorting recognizes Any free slots without stealing another member’s reservation', async t => {
+  const data = sortingFixture();
+  data.cpr = false;
+  data.plannerSnapshot.recommendationPolicy.mode = 'plan';
+  data.plannerSnapshot.planner.snapshotKind = 'plan';
+  for (const crime of data.plannerSnapshot.planner.crimes) {
+    for (const slot of crime.slots) {
+      if (typeof slot.currentProgress === 'number') slot.currentProgress *= 100;
+      if (!slot.currentUserId) slot.recommended = { anyFree: true };
+    }
+  }
+  data.plannerSnapshot.planner.crimes.push({ id: 109, name: 'Test OC', difficulty: 4, status: 'Recruiting', slots: [
+    occupiedQueueSlot('Driver', 77, 100),
+    { ...targetQueueSlot, recommended: { memberId: 777, name: 'Another member', cpr: 80 } },
+  ] });
+  data.html = data.html.replace('</div></div></main>', `${data.makeCard({ id: 109, tier: 4, progress: 1 })}</div></div></main>`);
+  const page = await open(t, data);
+  await expectCrimeOrder(page, [103, 108, 102, 106, 109, 101, 107, 104, 105]);
+  assert.deepEqual(await page.evaluate(() => testReadMemberPayload().payload.recommendations), [], 'the user has no optimizer assignment in this fixture');
+  assert.equal(await page.locator('[data-oc-id="109"] [data-fixture-role="Muscle #2"] button').isEnabled(), true, 'native Join being enabled never overrides a saved reservation');
+  assert.equal(await (await sortControl(page)).inputValue(), 'joinable');
+});
+
+test('each sorting option keeps Torn card controls and ties stable, saves locally, and adds no requests', async t => {
+  const data = sortingFixture();
+  const page = await open(t, data);
+  const control = await sortControl(page);
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.evaluate(() => {
+    window.testOriginalSortCards = [...document.querySelectorAll('[data-oc-id]')];
+    window.testOriginalSortJoin = document.querySelector('[data-oc-id="103"] [data-fixture-role="Muscle #2"] button');
+    testOriginalSortJoin.addEventListener('click', () => { window.nativeJoins++; });
+  });
+  for (const [mode, expected] of [
+    ['planning', [101, 107, 104, 103, 108, 102, 105, 106]],
+    ['tier-desc', [101, 103, 108, 105, 106, 102, 104, 107]],
+    ['tier-asc', [107, 104, 102, 106, 105, 103, 108, 101]],
+    ['native', data.nativeOrder],
+    ['joinable', [103, 108, 102, 106, 101, 107, 104, 105]],
+  ]) {
+    await control.selectOption(mode);
+    await expectCrimeOrder(page, expected);
+    assert.equal(await page.evaluate(() => testReadSortPreference()), mode);
+    assert.equal(await page.evaluate(() => testOriginalSortCards.every(card => card.isConnected)), true);
+    assert.equal(await page.evaluate(() => testOriginalSortJoin === document.querySelector('[data-oc-id="103"] [data-fixture-role="Muscle #2"] button')), true);
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+  }
+  await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"] button').click();
+  assert.equal(await page.evaluate(() => nativeJoins), 1, 'sorting does not replace native Join handlers');
+});
+
+test('saved sorting restores on startup and invalid saved preferences safely use the joinable default', async t => {
+  for (const [savedSort, mode, expected] of [
+    ['tier-desc', 'tier-desc', [101, 103, 108, 105, 106, 102, 104, 107]],
+    ['unsupported-old-value', 'joinable', [103, 108, 102, 106, 101, 107, 104, 105]],
+  ]) {
+    const page = await open(t, { ...sortingFixture(), savedSort });
+    assert.equal(await (await sortControl(page)).inputValue(), mode);
+    await expectCrimeOrder(page, expected);
+    assert.equal((await page.evaluate(() => testCalls)).filter(path => path === '/user/').length, 0, 'saved identity and sorting do not add Torn lookups');
+  }
+});
+
+test('joinability and sorting follow live joins, leaves, native availability and planning without requests', async t => {
+  const page = await open(t, sortingFixture());
+  // Keep equally advanced native clocks equal while asynchronous DOM updates
+  // execute; real wall-clock seconds must not turn this stable-tie case into
+  // two genuinely different remaining durations.
+  await page.evaluate(now => { Date.now = () => now; }, Date.parse(queueTime));
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"]').evaluate((role, html) => { role.outerHTML = html; },
+    nativeRole('Muscle #2', 80, { occupant: 222, planningDegrees: 0 }));
+  await expectCrimeOrder(page, [108, 102, 106, 101, 107, 104, 103, 105]);
+  await page.locator('[data-oc-id="102"] [data-fixture-role="Driver"] .planning___m3').evaluate(clock => {
+    clock.style.background = 'conic-gradient(var(--oc-clock-planning-bg) 315deg, transparent 0)';
+  });
+  await expectCrimeOrder(page, [102, 108, 106, 101, 107, 104, 103, 105]);
+  await page.locator('[data-oc-id="104"] [data-fixture-role="Muscle #2"] button').evaluate(button => { button.disabled = false; });
+  await expectCrimeOrder(page, [102, 104, 108, 106, 101, 107, 103, 105]);
+  await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"]').evaluate((role, html) => { role.outerHTML = html; },
+    nativeRole('Muscle #2', 80));
+  await expectCrimeOrder(page, [102, 104, 103, 108, 106, 101, 107, 105]);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+test('a role reopened after Find role and Stop immediately returns to joinable sorting without a snapshot refresh', async t => {
+  const page = await open(t, sortingFixture());
+  await page.evaluate(now => { Date.now = () => now; }, Date.parse(queueTime));
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  await sortControl(page);
+  const details = page.locator(`${panel} .ocp-cpr-details`);
+  if (!(await details.isVisible())) await page.locator(`${panel} .ocp-collapse`).click();
+  await details.evaluate(el => { el.open = true; });
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.locator(`${panel} .ocp-card-link[data-ocp-crime-id="103"]`).dispatchEvent('pointerdown');
+  await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"]').evaluate((role, html) => { role.outerHTML = html; },
+    nativeRole('Muscle #2', 80, { occupant: 222, planningDegrees: 0 }));
+  await expectCrimeOrder(page, [108, 102, 106, 101, 107, 104, 103, 105]);
+  await page.locator(`${panel} .ocp-target-feedback`).filter({ hasText: /filled/i }).waitFor();
+  await page.locator(`${panel} .ocp-highlight-stop`).click();
+  await page.locator('[data-oc-id="103"] [data-fixture-role="Muscle #2"]').evaluate((role, html) => { role.outerHTML = html; },
+    nativeRole('Muscle #2', 80));
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
+for (const inactive of ['hidden', 'blurred']) {
+  test(`sorting does not read or reorder crime cards while ${inactive}, and catches up on return`, async t => {
+    const page = await open(t, sortingFixture());
+    await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+    const requests = await page.evaluate(() => testCalls.length);
+    await page.evaluate(inactive => {
+      window.testInactiveSort = true;
+      if (inactive === 'hidden') Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => testInactiveSort ? 'hidden' : 'visible' });
+      else Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => !testInactiveSort });
+      window.testInactiveCardReads = 0;
+      window.trackInactiveCardReads = true;
+      for (const name of ['querySelector', 'querySelectorAll']) {
+        const original = Element.prototype[name];
+        Element.prototype[name] = function(...args) {
+          if (window.trackInactiveCardReads && this.matches('[data-oc-id], [data-fixture-role]')) window.testInactiveCardReads++;
+          return original.apply(this, args);
+        };
+      }
+      const clock = document.querySelector('[data-oc-id="102"] [data-fixture-role="Driver"] .planning___m3');
+      clock.style.background = 'conic-gradient(var(--oc-clock-planning-bg) 315deg, transparent 0)';
+      window.dispatchEvent(new Event(inactive === 'hidden' ? 'visibilitychange' : 'blur'));
+    }, inactive);
+    await page.waitForTimeout(400);
+    assert.equal(await page.evaluate(() => testInactiveCardReads), 0, 'inactive local refresh never scrapes role details');
+    assert.deepEqual(await visualCrimeOrder(page), [103, 108, 102, 106, 101, 107, 104, 105]);
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+    await page.evaluate(inactive => {
+      window.trackInactiveCardReads = false;
+      window.testInactiveSort = false;
+      if (inactive === 'hidden') document.dispatchEvent(new Event('visibilitychange'));
+      else window.dispatchEvent(new Event('focus'));
+    }, inactive);
+    await expectCrimeOrder(page, [102, 103, 108, 106, 101, 107, 104, 105]);
+    assert.equal(await page.evaluate(() => testCalls.length), requests);
+  });
+}
+
+test('a Crimes SPA navigation while blurred waits for focus before activating, reading or sorting', async t => {
+  const data = sortingFixture();
+  const page = await open(t, { ...data, url: 'https://www.torn.com/factions.php?step=your#/tab=members' });
+  assert.equal(await page.locator(panel).count(), 0);
+  assert.deepEqual(await page.evaluate(() => testCalls), []);
+  await page.evaluate(() => {
+    window.testSortBlurred = true;
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => !testSortBlurred });
+    const list = document.querySelector('#faction-crimes-root');
+    const markup = list.innerHTML;
+    window.testBlurredNavigationReads = 0;
+    for (const name of ['querySelector', 'querySelectorAll']) {
+      const original = Element.prototype[name];
+      Element.prototype[name] = function(...args) {
+        if (window.testSortBlurred && this.matches('[data-oc-id], [data-fixture-role]')) window.testBlurredNavigationReads++;
+        return original.apply(this, args);
+      };
+    }
+    history.pushState({}, '', '#/tab=crimes');
+    list.innerHTML = markup;
+    window.dispatchEvent(new Event('blur'));
+  });
+  // The helper starts with a small fresh cached payload. Let its ordinary
+  // refresh deadline elapse while still inactive, so focus loads the supplied
+  // full snapshot using exactly the normal planner request.
+  await page.clock.fastForward(6 * 60_000);
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(panel).count(), 0);
+  assert.deepEqual(await visualCrimeOrder(page), data.nativeOrder);
+  assert.equal(await page.evaluate(() => testBlurredNavigationReads), 0);
+  assert.deepEqual(await page.evaluate(() => testCalls), []);
+  await page.evaluate(() => {
+    window.testSortBlurred = false;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expectCrimeOrder(page, [103, 108, 102, 106, 101, 107, 104, 105]);
+  assert.equal(await page.locator(panel).count(), 1);
+  assert.deepEqual(await page.evaluate(() => testCalls), [
+    '/api/v1/factions/41309/oc-planner/bot-alerts',
+    '/api/v1/factions/41309/oc-planner/script-access',
+  ], 'returning to focus performs only the existing planner/check-in requests, not another Torn lookup');
+});

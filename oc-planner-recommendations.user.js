@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.78
+// @version      0.2.79
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,7 +25,7 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.78";
+	const SCRIPT_VERSION = "0.2.79";
 	const PAYLOAD_CACHE_VERSION = 14;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
@@ -40,6 +40,15 @@
 	const PAYLOAD_STORAGE_KEY = "askeladds_oc_planner_member_payload";
 	const SCRIPT_ACCESS_STORAGE_KEY = "askeladds_oc_planner_script_access";
 	const COLLAPSED_STORAGE_KEY = "askeladds_oc_planner_collapsed";
+	const SORT_STORAGE_KEY = "askeladds_oc_planner_sort";
+	const SORT_OPTIONS = [
+		["joinable", "Joinable first, shortest wait"],
+		["native", "Torn's order"],
+		["planning", "Shortest planning"],
+		["tier-desc", "Highest tier first"],
+		["tier-asc", "Lowest tier first"],
+	];
+	const normalizeSortMode = value => SORT_OPTIONS.some(([mode]) => mode === value) ? value : "joinable";
 	const PANEL_ID = "askeladds-oc-planner-panel";
 	const IN_PAGE_CRIME_ID_SELECTOR =
 		"[data-crime-id], [data-crimeid], [data-oc-id], a[href*='crimeId'], a[href*='crimeID']";
@@ -118,6 +127,7 @@
 		autoRefreshTimer: undefined,
 		active: false,
 		collapsed: initialCollapsed,
+		sortMode: normalizeSortMode(storage.get(SORT_STORAGE_KEY, "joinable")),
 		disclosureOpen: false,
 		flexibleOpen: false,
 		pendingHighlight: null,
@@ -134,6 +144,8 @@
 	const joinNotices = new Map();
 	const paintedRoles = new Map();
 	const visibleQueueObservations = new WeakMap();
+	const sortingStyles = new Map();
+	const isForegroundOcView = () => document.visibilityState === "visible" && (isTornPda || document.hasFocus());
 	let effectiveQueueLocks = new Map();
 	let effectiveQueueWarnings = new Map();
 	let effectiveJoinedPlanningDoneAt = new Map();
@@ -288,6 +300,29 @@
 			display: flex;
 			align-items: center;
 			gap: 6px;
+			flex-wrap: wrap;
+			justify-content: flex-end;
+		}
+		#${PANEL_ID} .ocp-sort-control {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			font: 11px Arial, sans-serif;
+			color: #d8d8d0;
+		}
+		#${PANEL_ID} .ocp-sort {
+			width: min(185px, 39vw);
+			min-width: 112px;
+			padding: 4px 2px;
+			border: 1px solid #65715d;
+			border-radius: 4px;
+			background: #1c231d;
+			color: #f3f0e8;
+			font: 11px Arial, sans-serif;
+		}
+		#${PANEL_ID} .ocp-sort:focus-visible {
+			outline: 2px solid #a7ee9f;
+			outline-offset: 2px;
 		}
 		#${PANEL_ID} .ocp-highlight-again {
 			padding: 3px 5px;
@@ -1508,6 +1543,7 @@
 		clearRecommendationJoinCues();
 		clearRecommendationHighlights();
 		clearNativeRoleStates();
+		clearCrimeSorting();
 		lastRenderedMarkup = "";
 		state.pendingHighlight = null;
 		state.targetFeedback = null;
@@ -2061,6 +2097,144 @@
 		return states;
 	};
 
+	// Sort visually without moving React-owned nodes or replacing Join controls.
+	// Every DOM read here is foreground-only, just like live queue observations.
+	const canReadCrimeSorting = () => isForegroundOcView() && state.active && isOcCrimesPage();
+
+	const restoreSortStyle = (element, property, saved) => {
+		if (element.style.getPropertyValue(property) !== saved.applied || element.style.getPropertyPriority(property) !== "important") return;
+		if (saved.value) element.style.setProperty(property, saved.value, saved.priority);
+		else element.style.removeProperty(property);
+	};
+	const clearCrimeSorting = () => {
+		for (const [element, properties] of sortingStyles) {
+			for (const [property, saved] of properties) restoreSortStyle(element, property, saved);
+		}
+		sortingStyles.clear();
+	};
+	const applySortingStyles = desired => {
+		for (const [element, properties] of sortingStyles) {
+			for (const [property, saved] of properties) {
+				if (!desired.get(element)?.has(property)) {
+					restoreSortStyle(element, property, saved);
+					properties.delete(property);
+				}
+			}
+			if (!properties.size) sortingStyles.delete(element);
+		}
+		for (const [element, properties] of desired) {
+			const savedProperties = sortingStyles.get(element) || new Map();
+			sortingStyles.set(element, savedProperties);
+			for (const [property, value] of properties) {
+				const previous = savedProperties.get(property);
+				const current = element.style.getPropertyValue(property);
+				const priority = element.style.getPropertyPriority(property);
+				// Preserve native style changes that happened while sorting was active.
+				const saved = previous && current === previous.applied && priority === "important"
+					? previous : { value: current, priority };
+				saved.applied = value;
+				savedProperties.set(property, saved);
+				if (current !== value || priority !== "important") element.style.setProperty(property, value, "important");
+			}
+		}
+	};
+
+	const sortEligibleCandidates = () => {
+		const payload = state.lastPayload;
+		if (!payload || payload.noPlan) return [];
+		return [...(payload.sortEligibleSlots || []), ...(payload.recommendationMode === "cpr"
+			? [...(payload.cprEligibleSlots || []), ...(payload.queueFallbackCandidates || [])]
+			: [...(payload.recommendations || []), ...(payload.flexibleSlots || [])])];
+	};
+	const crimeHasJoinableRole = (card, id, candidates, roleStates, now) => candidates.some(slot => {
+		if (String(slot.crimeId) !== id || getQueueLock(slot) || roleStates.get(queueRoleKey(slot))?.attribute) return false;
+		if (Number(slot.availableAt) > now || ((slot.available === "soon" || slot.currentCrimeId) && !slot.availableAt)) return false;
+		const button = findRoleJoinTarget(slot, card)?.button;
+		if (!button || button.matches(":disabled") || button.closest("[inert]")) return false;
+		const ownNotice = joinNotices.get(button);
+		const nativeDisabled = ownNotice?.attribute ? ownNotice.previousAriaDisabled : button.getAttribute("aria-disabled");
+		return nativeDisabled !== "true";
+	});
+	const crimeSortDifficulty = (card, id, candidates) => {
+		const valid = value => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 10;
+		const saved = state.lastPayload?.crimeSortInfoById?.[id]?.difficulty;
+		if (valid(saved)) return saved;
+		const candidate = candidates.find(slot => String(slot.crimeId) === id && valid(slot.difficulty));
+		if (candidate) return candidate.difficulty;
+		// Older personal caches have no sort metadata; use an explicit native tier.
+		for (const element of [card, ...card.querySelectorAll("[data-difficulty], [data-tier], [class*='difficulty'], [class*='level___']")]) {
+			const value = element.getAttribute("data-difficulty") || element.getAttribute("data-tier");
+			const match = value?.match(/^\d{1,2}$/) || element.textContent?.trim().match(/^(?:tier\s+)?(\d{1,2})(?:\s*\/\s*10)?$/i);
+			const tier = match ? Number(match[1] || match[0]) : undefined;
+			if (valid(tier)) return tier;
+		}
+		return undefined;
+	};
+	const compareKnownSortValue = (left, right, descending = false) => {
+		if (left === undefined) return right === undefined ? 0 : 1;
+		if (right === undefined) return -1;
+		return descending ? right - left : left - right;
+	};
+	const syncCrimeSorting = () => {
+		if (!canReadCrimeSorting()) return;
+		if (state.sortMode === "native") { clearCrimeSorting(); return; }
+		const markers = [...document.querySelectorAll("[data-oc-id], [data-crime-id], [data-crimeid]")]
+			.filter(card => !isInsidePanel(card) && /^[1-9]\d*$/.test(getElementCrimeId(card)) && card.querySelector(ROLE_TITLE_SELECTOR));
+		const cards = markers.filter(card => !markers.some(other => other !== card && other.contains(card)));
+		const groups = new Map();
+		for (const card of cards) {
+			let item = card, parent = card.parentElement;
+			while (parent && parent !== document.body && parent !== document.documentElement &&
+				cards.filter(other => parent.contains(other)).length === 1) {
+				item = parent; parent = parent.parentElement;
+			}
+			if (!parent || parent === document.body || parent === document.documentElement) continue;
+			const group = groups.get(parent) || [];
+			group.push({ card, item, id: getElementCrimeId(card) });
+			groups.set(parent, group);
+		}
+		const desired = new Map();
+		const style = (element, property, value) => {
+			if (!desired.has(element)) desired.set(element, new Map());
+			desired.get(element).set(property, value);
+		};
+		const candidates = sortEligibleCandidates();
+		const roleStates = getNativeRoleStates();
+		const now = Math.floor(Date.now() / 1000);
+		for (const [parent, group] of groups) {
+			if (group.length < 2 || new Set(group.map(entry => entry.item)).size !== group.length) continue;
+			const items = new Set(group.map(entry => entry.item));
+			// Never re-layout a toolbar, heading or pagination alongside the cards.
+			if ([...parent.children].some(child => !items.has(child) && !child.matches("style, script, template") && !child.hidden)) continue;
+			const children = [...parent.children];
+			const original = group.map(entry => {
+				const doneAt = effectiveJoinedPlanningDoneAt.get(entry.id);
+				return { ...entry, index: children.indexOf(entry.item),
+					joinable: crimeHasJoinableRole(entry.card, entry.id, candidates, roleStates, now),
+					remaining: Number.isFinite(doneAt) ? Math.max(0, doneAt - now) : undefined,
+					difficulty: crimeSortDifficulty(entry.card, entry.id, candidates) };
+			});
+			const sorted = [...original].sort((a, b) => {
+				if (state.sortMode === "tier-asc" || state.sortMode === "tier-desc") {
+					return compareKnownSortValue(a.difficulty, b.difficulty, state.sortMode === "tier-desc") || a.index - b.index;
+				}
+				return (state.sortMode === "joinable" ? Number(b.joinable) - Number(a.joinable) : 0) ||
+					compareKnownSortValue(a.remaining, b.remaining) || a.index - b.index;
+			});
+			if (sorted.every((entry, index) => entry.item === original[index].item)) continue;
+			const display = getComputedStyle(parent).display;
+			const grid = display === "grid" || display === "inline-grid";
+			if (!grid) {
+				style(parent, "display", "flex");
+				style(parent, "flex-direction", "column");
+			}
+			const flow = grid ? "grid-order" : "flex-visual";
+			if (window.CSS?.supports("reading-flow", flow)) style(parent, "reading-flow", flow);
+			sorted.forEach((entry, index) => style(entry.item, "order", String(index)));
+		}
+		applySortingStyles(desired);
+	};
+
 	const removeJoinNotice = (button, binding) => {
 		if (binding.attribute) {
 			button.removeAttribute(binding.attribute);
@@ -2086,7 +2260,7 @@
 	};
 
 	const syncNativeRoleStates = () => {
-		if (!state.active || !isOcCrimesPage() || document.visibilityState === "hidden") {
+		if (!isForegroundOcView() || !state.active || !isOcCrimesPage()) {
 			window.clearTimeout(queueUnlockTimer);
 			queueUnlockTimer = undefined;
 			return;
@@ -2155,6 +2329,7 @@
 			joinNotices.set(button, { attribute, label, previousAriaDisabled });
 		}
 		const nextUpdate = Math.min(nextUnlock, nextTimeUpdate);
+		syncCrimeSorting();
 		if (Number.isFinite(nextUpdate)) {
 			queueUnlockTimer = window.setTimeout(() => {
 				// Threshold changes also affect panel guidance. Ordinary minute
@@ -2346,6 +2521,7 @@
 	};
 
 	const syncRecommendationJoinCues = () => {
+		if (!isForegroundOcView()) return;
 		const recommendations = state.lastPayload?.recommendations || [];
 		if (!state.active || !isOcCrimesPage() || !recommendations.length) {
 			clearRecommendationJoinCues();
@@ -2630,6 +2806,7 @@
 	};
 
 	const retryPendingHighlight = () => {
+		if (!isForegroundOcView()) return;
 		const pending = state.pendingHighlight;
 		if (!pending) return;
 		const result = highlightRecommendation(pending.recommendation);
@@ -3424,6 +3601,8 @@
 			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueWarningHours, false),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			joinedPlanningDoneAtByCrime: buildJoinedPlanningDoneAtByCrime(planner, recommendationMode),
+			crimeSortInfoById: Object.fromEntries((planner.crimes || []).map(crime => [String(crime.id), { difficulty: crime.difficulty }])),
+			sortEligibleSlots: findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements),
 			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
 				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements)
 				: [],
@@ -3685,8 +3864,9 @@
 	};
 
 	const resumeVisibleRefresh = () => {
-		if (document.visibilityState !== "visible") return;
-		if (state.active && isOcCrimesPage()) render();
+		if (!isForegroundOcView()) return;
+		syncPageActivation();
+		retryPendingHighlight();
 		if (
 			state.active &&
 			isOcCrimesPage() &&
@@ -4197,6 +4377,11 @@
 					<span class="ocp-target-feedback ${escapeHtml(feedback?.kind || "")}" aria-live="polite" title="${escapeHtml(feedback?.detail || feedback?.label || "")}"${feedback ? "" : " hidden"}>${escapeHtml(feedback?.label || "")}</span>
 				</div>
 				<div class="ocp-actions">
+					<label class="ocp-sort-control">Sort
+						<select class="ocp-sort" aria-label="Sort OCs" title="Joinable first puts OCs with an available eligible role ahead of the others, then sorts by shortest joined planning remaining.">
+							${SORT_OPTIONS.map(([mode, label]) => `<option value="${mode}"${state.sortMode === mode ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+						</select>
+					</label>
 					${highlightAgain}
 					<button class="ocp-button ocp-highlight-stop" title="Stop highlight"${state.pendingHighlight ? "" : " hidden"}>Stop</button>
 					<button type="button" class="ocp-icon-button ocp-collapse" aria-expanded="${!collapsed}" aria-controls="${PANEL_ID}-body" aria-label="${collapsed ? "Expand OC Planner" : "Collapse OC Planner"}" title="${collapsed ? "Expand" : "Collapse"}">${collapsed ? "+" : "-"}</button>
@@ -4227,8 +4412,9 @@
 			syncRecommendationJoinCues();
 			return;
 		}
-		const focusedToggle = panel.querySelector(".ocp-title:focus, .ocp-collapse:focus");
-		const focusedClass = focusedToggle?.classList.contains("ocp-collapse") ? ".ocp-collapse" : ".ocp-title";
+		const focusedToggle = panel.querySelector(".ocp-title:focus, .ocp-collapse:focus, .ocp-sort:focus");
+		const focusedClass = focusedToggle?.classList.contains("ocp-sort") ? ".ocp-sort"
+			: focusedToggle?.classList.contains("ocp-collapse") ? ".ocp-collapse" : ".ocp-title";
 		panel.innerHTML = markup;
 		lastRenderedMarkup = markup;
 		panel.classList.toggle("collapsed", state.collapsed);
@@ -4237,6 +4423,11 @@
 		const toggleCollapsed = () => {
 			setCollapsed(!state.collapsed);
 		};
+		panel.querySelector(".ocp-sort")?.addEventListener("change", event => {
+			state.sortMode = normalizeSortMode(event.target.value);
+			storage.set(SORT_STORAGE_KEY, state.sortMode);
+			syncNativeRoleStates();
+		});
 		addTapHandler(panel.querySelector(".ocp-title"), toggleCollapsed);
 		addTapHandler(panel.querySelector(".ocp-collapse"), (event) => {
 			event.stopPropagation();
@@ -4374,9 +4565,11 @@
 	};
 
 	const queuePageDomSync = (delay = 250) => {
+		if (!isForegroundOcView()) return;
 		if (state.domSyncTimer) return;
 		state.domSyncTimer = window.setTimeout(() => {
 			state.domSyncTimer = undefined;
+			if (!isForegroundOcView()) return;
 			syncPageActivation();
 			if (state.active) {
 				syncRecommendationJoinCues();
@@ -4387,6 +4580,7 @@
 	const startPageObserver = () => {
 		if (state.pageObserver || typeof MutationObserver !== "function" || !document.body) return;
 		state.pageObserver = new MutationObserver((mutations) => {
+			if (!isForegroundOcView()) return;
 			const relevant = mutations.some((mutation) => {
 				const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
 				if (target?.closest(`[${ROLE_NOTICE_ATTRIBUTE}]`)) return false;
@@ -4425,7 +4619,9 @@
 	});
 	document.addEventListener("visibilitychange", resumeVisibleRefresh);
 	window.addEventListener("focus", () => {
-		if (state.active && isOcCrimesPage()) render();
+		if (!isForegroundOcView()) return;
+		syncPageActivation();
+		retryPendingHighlight();
 	});
 	// pushState/replaceState do not emit hashchange. Torn can use either during tab navigation.
 	for (const method of ["pushState", "replaceState"]) {

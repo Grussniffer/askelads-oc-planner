@@ -38,6 +38,26 @@ The section remembers whether the player left it collapsed. When a saved key has
 
 On Torn's OC list, each reserved assignment is labelled with the role and the OC it follows. The label changes when the exact role is opening, found, already joined, filled by another player, or missing. Hovering the label shows the exact OC id plus planned join and start times when available.
 
+## OC sorting
+
+The **Sort** dropdown remains available in the OC Planner header, including when the panel is collapsed. Its default is **Joinable first, shortest wait**: OCs with at least one eligible role you can currently join come first, ordered by their shortest remaining joined-member planning time. OCs without a joinable role follow afterward. A blocked OC with a shorter queue does not jump ahead of a joinable OC.
+
+| Option | Order |
+| --- | --- |
+| Joinable first, shortest wait | Joinable OCs first; shortest remaining joined planning within each group. |
+| Torn's order | Restore Torn's original card order. |
+| Shortest planning | Shortest remaining joined planning across all OCs, including ones you cannot join. |
+| Highest tier first | Highest known OC difficulty first. |
+| Lowest tier first | Lowest known OC difficulty first. |
+
+Unknown planning time or difficulty goes after known values, and equal values preserve Torn's order. Joinability respects personal recommendations or CPR eligibility, occupied roles, future availability, the faction's queue rules and exceptions, and Torn's own Join restrictions. Planning time describes the work already queued by joined members; it is not a promise that an OC will start then, because its remaining roles still need filling.
+
+The choice is saved locally using userscript storage, falling back to browser local storage in Torn PDA. It survives refreshes and does not change the faction's admin settings. Sorting uses existing personal snapshot data and foreground live-card updates, with no extra Torn or backend API calls. Optional sorting metadata arrives with normal snapshots; older cached snapshots still use their existing role candidates and available native tier labels.
+
+Sorting changes visual order on verified sibling-card lists without moving Torn's DOM nodes, replacing Join buttons, or changing their actions. Mixed lists containing visible toolbars, headings or pagination are left alone. Live joins, leaves and progress update the order while the Crimes tab is visible and focused; Torn PDA uses visibility because its focus reporting differs. Returning to the page applies pending changes. Choosing Torn's order or leaving the Crimes tab restores the script's layout changes.
+
+## Recommendations and eligibility
+
 If the faction has no saved plan, the panel shows a neutral no-plan notice instead of an error or an older cached assignment. It continues checking automatically and will show recommendations after a faction planner admin generates a plan.
 
 Faction admins can choose between complete-plan recommendations and CPR eligibility. In CPR mode, open role cards are green when the member's saved CPR fits the faction's band and red when it falls outside. Red cards explain the limit and block Join. Missing CPR or limits leave the card neutral. Green roles respect Torn's own button availability. Opening a grouped OC focuses its roles in yellow.
