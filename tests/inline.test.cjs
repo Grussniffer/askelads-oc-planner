@@ -18,7 +18,7 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) }); });
 after(async () => { await browser?.close(); });
 
-async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 14, clockTime, savedSort, cachedPayload } = {}) {
+async function open(t, { url = route, html = fixture, saved = false, cpr = false, width = 1000, deferProfile = false, deferPlanner = false, plannerSnapshot = null, cacheSchemaVersion = 15, clockTime, savedSort, cachedPayload } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 800 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -312,7 +312,7 @@ async function assertNumberedHighlights(page) {
   assert.deepEqual(await page.locator('.askeladds-oc-planner-role-cpr-eligible').evaluateAll(elements =>
     elements.map(el => el.closest('[data-position]').dataset.position).sort()), ['Looter #2', 'Muscle #1']);
   const cached = await page.evaluate(() => testReadMemberPayload());
-  assert.equal(cached.schemaVersion, 14);
+  assert.equal(cached.schemaVersion, 15);
   assert.equal(cached.payload.cprEligibleSlots.length, 2);
   assert.equal(cached.payload.cprIneligibleCount, 3);
   assert.equal(cached.payload.cprMissingCount, 0);
@@ -463,7 +463,7 @@ test('a zero-weight numbered role uses its own impact band and respects custom m
   assert.equal(payload.cprEligibleSlots.find(slot => slot.position === 'Looter #2').cprBand, '100% CPR');
 });
 
-for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+for (const cacheSchemaVersion of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
   test(`rebuilds pre-fix v${cacheSchemaVersion} recommendations without another Torn profile call`, async t => {
     const page = await open(t, { saved: true, cpr: true, cacheSchemaVersion, html: fixture.replace(crime, numberedCrime), plannerSnapshot: numberedSnapshot });
     await assertNumberedHighlights(page);
@@ -840,6 +840,40 @@ test('the faction queue limit applies to both native and saved work and can be d
   assert.equal(await page.evaluate(() => testCalls.filter(path => path === '/user/').length), tornCalls);
 });
 
+test('tier rules distinguish identical waits on live cards and in saved queues', async t => {
+  const slots = [occupiedQueueSlot('Driver', 77, .5), occupiedQueueSlot('Lookout', 88, 0), targetQueueSlot];
+  const snapshot = liveQueueSnapshot('cpr', [101, 102, 103, 104].map(id => ({ id, slots })));
+  snapshot.planner.crimes.forEach((crime, i) => { crime.difficulty = [2, 4, 7, undefined][i]; });
+  Object.assign(snapshot.recommendationPolicy, {
+    planningQueueLimitHours: 0, planningQueueWarningHours: 24, allowPlanningQueueFallback: true,
+    planningQueueByTier: { 2: { limitHours: 96, warningHours: 0 }, 4: { limitHours: 30 }, 7: { limitHours: 12 } },
+  });
+  const roles = degrees => [
+    nativeRole('Driver', 70, { occupant: 77, planningDegrees: degrees }),
+    nativeRole('Lookout', 70, { occupant: 88, planningDegrees: 0 }), nativeRole('Muscle #2', 80),
+  ];
+  const html = fixture.replace(crime, [101, 102, 103, 104].map(id =>
+    nativeCrime(id, roles(id === 103 ? undefined : 180))).join(''));
+  const page = await open(t, { saved: true, cpr: true, html, plannerSnapshot: snapshot, clockTime: queueTime });
+  const role = id => page.locator(`[data-oc-id="${id}"] [data-fixture-role="Muscle #2"]`);
+  await role(101).locator('.ocp-eligible-reason').waitFor();
+  assert.equal(await role(101).locator('button').isEnabled(), true);
+  for (const [id, limit] of [[102, 30], [103, 12]]) {
+    await role(id).locator('.ocp-queue-reason').waitFor();
+    assert.match(await role(id).innerText(), new RegExp(`over ${limit}h`));
+    assert.equal(await role(id).locator('button').isDisabled(), true);
+  }
+  await role(104).locator('.ocp-queue-warning-reason').waitFor();
+  assert.equal(await role(104).locator('button').isEnabled(), true);
+  const requests = await page.evaluate(() => testCalls.length);
+  await page.locator('[data-oc-id="102"] [data-fixture-role="Lookout"]').evaluate((el, replacement) => {
+    el.outerHTML = replacement;
+  }, nativeRole('Lookout', 70));
+  await role(102).locator('.ocp-eligible-reason').waitFor();
+  assert.equal(await role(102).locator('button').isEnabled(), true);
+  assert.equal(await page.evaluate(() => testCalls.length), requests);
+});
+
 function queueFallbackFixture(otherSlots, otherRoles = []) {
   const occupied = [
     occupiedQueueSlot('Driver', 77, 0),
@@ -862,6 +896,18 @@ function queueFallbackFixture(otherSlots, otherRoles = []) {
   ]) + (otherRoles.length ? nativeCrime(102, otherRoles) : ''));
   return { html, plannerSnapshot: snapshot };
 }
+
+test('a tier-only blocking limit supports the last-resort exception with the faction limit off', async t => {
+  const options = queueFallbackFixture([]);
+  options.plannerSnapshot.planner.crimes[0].difficulty = 3;
+  Object.assign(options.plannerSnapshot.recommendationPolicy, {
+    planningQueueLimitHours: 0, planningQueueByTier: { 3: { limitHours: 48 } },
+  });
+  const page = await open(t, { saved: true, cpr: true, clockTime: queueTime, ...options });
+  const role = page.locator('[data-oc-id="101"] [data-fixture-role="Muscle #2"]');
+  await role.locator('.ocp-queue-fallback-reason').waitFor();
+  assert.equal(await role.getByRole('button', { name: 'Join' }).isEnabled(), true);
+});
 
 test('the last-resort exception follows live openings without bypassing CPR or Torn availability', async t => {
   const alternative = { position: 'Muscle #1', minimumRecommendedCpr: 0, maximumRecommendedCpr: 100 };

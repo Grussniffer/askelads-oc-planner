@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AskeLadds OC Planner Recommendations
 // @namespace    https://askeladds.local/oc-planner
-// @version      0.2.81
+// @version      0.2.82
 // @description  Inline personal OC recommendations on Torn's organized crimes page.
 // @author       AskeLadds
 // @downloadURL  https://raw.githubusercontent.com/Grussniffer/askelads-oc-planner/main/oc-planner-recommendations.user.js
@@ -25,8 +25,8 @@
 	"use strict";
 
 	const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-	const SCRIPT_VERSION = "0.2.81";
-	const PAYLOAD_CACHE_VERSION = 14;
+	const SCRIPT_VERSION = "0.2.82";
+	const PAYLOAD_CACHE_VERSION = 15;
 	const PLANNING_TURN_SECONDS = 24 * 3600;
 	const DEFAULT_PLANNING_QUEUE_LIMIT_HOURS = 48;
 	const DEFAULT_PLANNING_QUEUE_WARNING_HOURS = 24;
@@ -1245,6 +1245,7 @@
 					: snapshotAvailable ? "ready" : "missing",
 				recommendationPolicy: {
 					mode: recommendationPolicy.mode === "cpr" ? "cpr" : "plan",
+					planningQueueByTier: recommendationPolicy.planningQueueByTier,
 					planningQueueLimitHours: recommendationPolicy.planningQueueLimitHours,
 					planningQueueWarningHours: recommendationPolicy.planningQueueWarningHours,
 					allowPlanningQueueFallback: recommendationPolicy.allowPlanningQueueFallback === true,
@@ -2004,6 +2005,14 @@
 		Number.isInteger(hours) && hours >= 0 && hours <= MAX_PLANNING_QUEUE_LIMIT_HOURS
 			? hours : DEFAULT_PLANNING_QUEUE_WARNING_HOURS;
 
+	const queueHoursForTier = (policy, tier) => {
+		const rule = policy?.planningQueueByTier?.[tier];
+		return {
+			limitHours: normalizePlanningQueueLimitHours(rule?.limitHours ?? policy?.planningQueueLimitHours),
+			warningHours: normalizePlanningQueueWarningHours(rule?.warningHours ?? policy?.planningQueueWarningHours),
+		};
+	};
+
 	const eligibleRoleReason = (slot) => {
 		const cpr = getCprNumber(slot.cpr);
 		return cpr === undefined ? "CPR eligible" : `Eligible · CPR ${cpr}%`;
@@ -2016,8 +2025,8 @@
 		return `Joined planning left: ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 	};
 
-	const queueLockReason = () =>
-		`Queue full · over ${normalizePlanningQueueLimitHours(state.lastPayload?.planningQueueLimitHours)}h of planning ahead`;
+	const queueLockReason = (lock) =>
+		`Queue full · over ${lock.thresholdHours}h of planning ahead`;
 
 	const getRawQueueLock = (slot) => {
 		const lock = effectiveQueueLocks.get(queueRoleKey(slot));
@@ -2074,7 +2083,7 @@
 			if (slot.unlockAt <= Math.floor(Date.now() / 1000) || previous?.attribute === CPR_LOCK_ATTRIBUTE ||
 				(payload.recommendationMode === "cpr" && !previous)) continue;
 			const cpr = getCprNumber(previous?.slot.cpr);
-			const hours = normalizePlanningQueueWarningHours(payload.planningQueueWarningHours);
+			const hours = slot.thresholdHours;
 			const planning = rolePlanningLeft(slot);
 			states.set(key, {
 				slot, tone: QUEUE_WARNING_ROLE_CLASS, noticeClass: "ocp-queue-warning-reason",
@@ -2084,7 +2093,7 @@
 		}
 		for (const slot of effectiveQueueLocks.values()) {
 			if (getQueueLock(slot)) {
-				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: queueLockReason() });
+				states.set(queueRoleKey(slot), { slot, tone: QUEUE_FULL_ROLE_CLASS, attribute: QUEUE_LOCK_ATTRIBUTE, reason: queueLockReason(slot) });
 			}
 		}
 		for (const [key, slot] of queueFallbackRoles) {
@@ -2160,7 +2169,7 @@
 		const nativeDisabled = ownNotice?.attribute ? ownNotice.previousAriaDisabled : button.getAttribute("aria-disabled");
 		return nativeDisabled !== "true";
 	});
-	const crimeSortDifficulty = (card, id, candidates) => {
+	const crimeDifficulty = (card, id, candidates) => {
 		const valid = value => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 10;
 		const saved = state.lastPayload?.crimeSortInfoById?.[id]?.difficulty;
 		if (valid(saved)) return saved;
@@ -2271,7 +2280,7 @@
 					joinable: joinableFirst && crimeHasJoinableRole(entry.card, entry.id, candidates, roleStates, now),
 					participation: joinableFirst ? crimeParticipationRank(entry.card, entry.id) : 1,
 					remaining: Number.isFinite(doneAt) ? Math.max(0, doneAt - now) : undefined,
-					difficulty: crimeSortDifficulty(entry.card, entry.id, candidates) };
+					difficulty: crimeDifficulty(entry.card, entry.id, candidates) };
 			});
 			// If Torn offers no usable Join, show suitable open positions for the next OC.
 			// The lookup accepts disabled Join controls and never changes them.
@@ -2481,8 +2490,9 @@
 					: "Filled by another player",
 			};
 		}
-		if (getQueueLock(recommendation)) {
-			return { kind: "missing", label: `Queue full: ${role}`, status: queueLockReason() };
+		const lock = getQueueLock(recommendation);
+		if (lock) {
+			return { kind: "missing", label: `Queue full: ${role}`, status: queueLockReason(lock) };
 		}
 
 		const isHighlightedTarget =
@@ -3335,6 +3345,7 @@
 	};
 
 	const getRecommendationPolicyStatus = (recommendationPolicy = {}) => ({
+		planningQueueByTier: recommendationPolicy.planningQueueByTier || {},
 		planningQueueLimitHours: normalizePlanningQueueLimitHours(recommendationPolicy.planningQueueLimitHours),
 		planningQueueWarningHours: normalizePlanningQueueWarningHours(recommendationPolicy.planningQueueWarningHours),
 		allowPlanningQueueFallback: recommendationPolicy.allowPlanningQueueFallback === true,
@@ -3493,10 +3504,8 @@
 
 	const refreshEffectiveQueueLocks = () => {
 		const payload = state.lastPayload;
-		const limitHours = normalizePlanningQueueLimitHours(payload?.planningQueueLimitHours);
-		const warningHours = normalizePlanningQueueWarningHours(payload?.planningQueueWarningHours);
-		effectiveQueueLocks = new Map(limitHours ? Object.entries(payload?.queueLocks || {}) : []);
-		effectiveQueueWarnings = new Map(warningHours ? Object.entries(payload?.queueWarnings || {}) : []);
+		effectiveQueueLocks = new Map(Object.entries(payload?.queueLocks || {}));
+		effectiveQueueWarnings = new Map(Object.entries(payload?.queueWarnings || {}));
 		effectiveJoinedPlanningDoneAt = new Map(Object.entries(payload?.joinedPlanningDoneAtByCrime || {})
 			.filter(([, doneAt]) => Number.isFinite(doneAt) && doneAt >= 0));
 		queueFallbackRoles = new Map();
@@ -3506,6 +3515,7 @@
 		const now = Math.floor(Date.now() / 1000);
 		const includeScheduledTurns = payload.recommendationMode === "plan";
 		const visibleCrimes = new Map();
+		const hasTierRules = Object.keys(payload.planningQueueByTier || {}).length > 0;
 		const cards = [...document.querySelectorAll(NATIVE_CRIME)];
 		if (payload.allowPlanningQueueFallback) cards.push(...document.querySelectorAll("[data-crime-id], [data-crimeid]"));
 		for (const card of cards) {
@@ -3515,6 +3525,8 @@
 			if (!card.matches(NATIVE_CRIME)) continue;
 			const queue = readVisibleQueue(card, payload.queueSlotsByCrime?.[crimeId] || [], includeScheduledTurns, now);
 			if (!queue) continue;
+			const tier = hasTierRules ? crimeDifficulty(card, crimeId, []) : undefined;
+			const { limitHours, warningHours } = queueHoursForTier(payload, tier);
 			effectiveJoinedPlanningDoneAt.set(crimeId, queue.joinedDoneAt);
 			for (const [hours, states] of [[limitHours, effectiveQueueLocks], [warningHours, effectiveQueueWarnings]]) {
 				for (const key of states.keys()) {
@@ -3525,7 +3537,7 @@
 					if (!slot.open) continue;
 					const unlockAt = getQueueUnlockAt(queue, slot, now, queue.joinedDoneAt, states === effectiveQueueLocks && includeScheduledTurns, hours);
 					if (unlockAt) {
-						const target = { crimeId, position: slot.position, unlockAt };
+						const target = { crimeId, position: slot.position, unlockAt, thresholdHours: hours };
 						states.set(queueRoleKey(target), target);
 					}
 				}
@@ -3534,22 +3546,24 @@
 		queueFallbackRoles = getQueueFallbackRoles(payload, visibleCrimes, now);
 	};
 
-	const buildQueueLocks = (planner, mode, limitHours, includeScheduledTurns = mode === "plan") => {
-		if (!limitHours) return {};
+	const buildQueueLocks = (planner, mode, policy, threshold) => {
+		const includeScheduledTurns = threshold === "limitHours" && mode === "plan";
 		const now = Math.floor(Date.now() / 1000);
 		const snapshotUnix = Math.floor(Date.parse(planner.generatedAt) / 1000);
 		const fractionalProgress = planner.snapshotKind ? planner.snapshotKind === "cpr" : mode === "cpr";
 		const locks = {};
 		for (const crime of planner.crimes || []) {
 			if (normalizeText(crime.status) !== "recruiting" || !/^\d+$/.test(String(crime.id || ""))) continue;
+			const hours = queueHoursForTier(policy, crime.difficulty)[threshold];
+			if (!hours) continue;
 			const joinedDoneAt = getJoinedPlanningDoneAt(crime, snapshotUnix, fractionalProgress);
 			for (const slot of crime.slots || []) {
 				if (slot.currentUserId || slot.currentUserName) continue;
 				const position = slot.position || slot.role;
 				if (!position) continue;
-				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, includeScheduledTurns, limitHours);
+				const unlockAt = getQueueUnlockAt(crime, slot, now, joinedDoneAt, includeScheduledTurns, hours);
 				if (unlockAt) {
-					const target = { crimeId: crime.id, position, unlockAt };
+					const target = { crimeId: crime.id, position, unlockAt, thresholdHours: hours };
 					locks[queueRoleKey(target)] = target;
 				}
 			}
@@ -3648,6 +3662,8 @@
 				memberId
 		);
 		const sortEligibleSlots = findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements);
+		const hasQueueLimit = policyStatus.planningQueueLimitHours > 0 ||
+			Object.values(policyStatus.planningQueueByTier).some(rule => rule?.limitHours > 0);
 		const cprMemberStatus = recommendationMode !== "cpr"
 			? ""
 			: hasCprProfile
@@ -3666,8 +3682,8 @@
 			plannerRunId: planner?.id,
 			plannerGeneratedAt: planner?.generatedAt,
 			summary: planner?.summary,
-			queueLocks: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueLimitHours),
-			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus.planningQueueWarningHours, false),
+			queueLocks: buildQueueLocks(planner, recommendationMode, policyStatus, "limitHours"),
+			queueWarnings: buildQueueLocks(planner, recommendationMode, policyStatus, "warningHours"),
 			queueSlotsByCrime: getQueueSlotsByCrime(planner, recommendationMode),
 			joinedPlanningDoneAtByCrime: buildJoinedPlanningDoneAtByCrime(planner, recommendationMode),
 			crimeSortInfoById: Object.fromEntries((planner.crimes || []).map(crime => [String(crime.id), {
@@ -3678,7 +3694,7 @@
 			sortEligibleSlots,
 			sortCprEligibleSlots: recommendationMode === "plan"
 				? findQueueFallbackCandidates(planner, memberId, recommendationMode, cprRequirements, true) : undefined,
-			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && policyStatus.planningQueueLimitHours
+			queueFallbackCandidates: policyStatus.allowPlanningQueueFallback && hasQueueLimit
 				? sortEligibleSlots : [],
 			recommendations,
 			hasAssignedRole: recommendations.length > 0,
